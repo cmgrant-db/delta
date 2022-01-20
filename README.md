@@ -100,3 +100,5 @@ There are two mediums of communication within the Delta Lake community.
   - [Login here](https://delta-users.slack.com/)
 
 - Public [Mailing list](https://groups.google.com/forum/#!forum/delta-users)
+
+asdkfljsdf;jsdf
