@@ -60,6 +60,10 @@ def run_scala_integration_tests(root_dir, version, test_name, extra_maven_repo, 
 def run_python_integration_tests(root_dir, version, test_name, extra_maven_repo, extra_packages, jars, conf):
     print("\n\n##### Running Python tests on version %s #####" % str(version))
     clear_artifact_cache()
+
+    # THIS IS A HACK FOR DEBUGGING
+    run_cmd(["build/sbt", "publishM2"])
+
     test_dir = path.join(root_dir, path.join("examples", "python"))
     files_to_skip = {"using_with_pip.py"}
 

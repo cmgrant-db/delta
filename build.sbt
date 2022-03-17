@@ -187,8 +187,8 @@ lazy val storageDynamodb = (project in file("storage-dynamodb"))
   .settings (
     name := "delta-storage-dynamodb",
     commonSettings,
-    skipReleaseSettings,
-    // releaseSettings,
+//    skipReleaseSettings,
+     releaseSettings,
     libraryDependencies ++= Seq(
       "com.amazonaws" % "aws-java-sdk" % "1.7.4"
     )
