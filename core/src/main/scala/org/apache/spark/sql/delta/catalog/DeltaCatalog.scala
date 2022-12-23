@@ -507,7 +507,9 @@ class DeltaCatalog extends DelegatingCatalogExtension
               col.dataType(),
               col.isNullable,
               Option(col.comment()),
-              Option(col.position()).map(UnresolvedFieldPosition))
+              Option(col.position()).map(UnresolvedFieldPosition),
+              // todo: do we need to check for a default?...
+              None)
           }).run(spark)
 
       case (t, deleteColumns) if t == classOf[DeleteColumn] =>

@@ -156,10 +156,10 @@ class DeltaAnalysis(session: SparkSession)
             cloneStatement)
 
         case u: UnresolvedRelation =>
-          u.failAnalysis(msg = s"Table not found: ${u.multipartIdentifier.quoted}")
+          u.tableNotFound(u.multipartIdentifier)
 
         case TimeTravel(u: UnresolvedRelation, _, _, _) =>
-          u.failAnalysis(msg = s"Table not found: ${u.multipartIdentifier.quoted}")
+          u.tableNotFound(u.multipartIdentifier)
 
         case LogicalRelation(
             HadoopFsRelation(location, _, _, _, _: ParquetFileFormat, _), _, catalogTable, _) =>
@@ -226,10 +226,10 @@ class DeltaAnalysis(session: SparkSession)
           RestoreTableCommand(traveledTable, tblIdent)
 
         case u: UnresolvedRelation =>
-          u.failAnalysis(msg = s"Table not found: ${u.multipartIdentifier.quoted}")
+          u.tableNotFound(u.multipartIdentifier)
 
         case TimeTravel(u: UnresolvedRelation, _, _, _) =>
-          u.failAnalysis(msg = s"Table not found: ${u.multipartIdentifier.quoted}")
+          u.tableNotFound(u.multipartIdentifier)
 
         case _ =>
           throw DeltaErrors.notADeltaTableException("RESTORE")
@@ -628,7 +628,9 @@ class DeltaAnalysis(session: SparkSession)
           Cast(input, dt, Option(timeZone), ansiEnabled = false)
       case SQLConf.StoreAssignmentPolicy.ANSI =>
         (input: Expression, dt: DataType, name: String) => {
-          AnsiCast(input, dt, Option(timeZone))
+          Cast(input, dt, Option(timeZone), ansiEnabled = true)
+          // todo: what does this do cast.setTagValue(Cast.BY_TABLE_INSERTION, ())?
+          // A tag to identify if a CAST added by the table insertion resolver.
         }
       case SQLConf.StoreAssignmentPolicy.STRICT =>
         (input: Expression, dt: DataType, _) =>
@@ -775,7 +777,8 @@ case class DeltaDynamicPartitionOverwriteCommand(
     deltaTable: DeltaTableV2,
     query: LogicalPlan,
     writeOptions: Map[String, String],
-    isByName: Boolean) extends RunnableCommand with V2WriteCommand {
+    isByName: Boolean,
+    analyzedQuery: Option[LogicalPlan] = None) extends RunnableCommand with V2WriteCommand {
 
   override def child: LogicalPlan = query
 
@@ -786,6 +789,8 @@ case class DeltaDynamicPartitionOverwriteCommand(
   override def withNewTable(newTable: NamedRelation): DeltaDynamicPartitionOverwriteCommand = {
     copy(table = newTable)
   }
+
+  override def storeAnalyzedQuery(): Command = copy(analyzedQuery = Some(query))
 
   override protected def withNewChildInternal(
       newChild: LogicalPlan): DeltaDynamicPartitionOverwriteCommand = copy(query = newChild)
