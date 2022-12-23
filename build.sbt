@@ -17,7 +17,7 @@
 import java.nio.file.Files
 import TestParallelization._
 
-val sparkVersion = "3.3.1"
+val sparkVersion = "3.4.0"
 val scala212 = "2.12.15"
 val scala213 = "2.13.5"
 val default_scala_version = scala212
@@ -70,8 +70,9 @@ lazy val core = (project in file("core"))
       // -- Bump up the genjavadoc version explicitly to 0.18 to work with Scala 2.12
       compilerPlugin("com.typesafe.genjavadoc" %% "genjavadoc-plugin" % "0.18" cross CrossVersion.full)
     ),
+    resolvers += "Spark Staging" at "https://repository.apache.org/content/repositories/orgapachespark-1435",
     Compile / packageBin / mappings := (Compile / packageBin / mappings).value ++
-        listPythonFiles(baseDirectory.value.getParentFile / "python"),
+      listPythonFiles(baseDirectory.value.getParentFile / "python"),
 
     Antlr4 / antlr4Version:= "4.8",
     Antlr4 / antlr4PackageName := Some("io.delta.sql.parser"),
@@ -314,11 +315,11 @@ def ignoreUndocumentedPackages(packages: Seq[Seq[java.io.File]]): Seq[Seq[java.i
     .map(_.filterNot(_.getCanonicalPath.contains("io/delta/sql")))
     .map(_.filterNot(_.getCanonicalPath.contains("io/delta/tables/execution")))
     .map { _.filterNot { f =>
-        // LogStore.java and CloseableIterator.java are the only public io.delta.storage APIs
-        f.getCanonicalPath.contains("io/delta/storage") &&
+      // LogStore.java and CloseableIterator.java are the only public io.delta.storage APIs
+      f.getCanonicalPath.contains("io/delta/storage") &&
         f.getName != "LogStore.java" &&
         f.getName != "CloseableIterator.java"
-      }
+    }
     }
     .map(_.filterNot(_.getCanonicalPath.contains("spark")))
 }
@@ -335,13 +336,13 @@ lazy val unidocSettings = Seq(
     (ScalaUnidoc / unidoc / unidocAllSources).value
       // ignore Scala (non-public) io.delta.storage classes
       .map(_.filterNot(_.getCanonicalPath.contains("io/delta/storage"))) ++
-    // include public io.delta.storage classes
-    (JavaUnidoc / unidoc / unidocAllSources).value
-      .map { _.filter { f =>
+      // include public io.delta.storage classes
+      (JavaUnidoc / unidoc / unidocAllSources).value
+        .map { _.filter { f =>
           f.getCanonicalPath.contains("io/delta/storage") &&
-          (f.getName == "LogStore.java" || f.getName == "CloseableIterator.java")
+            (f.getName == "LogStore.java" || f.getName == "CloseableIterator.java")
         }
-      }
+        }
   },
 
   // Configure Java unidoc
