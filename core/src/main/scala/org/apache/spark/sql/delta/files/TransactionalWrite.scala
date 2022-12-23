@@ -36,7 +36,7 @@ import org.apache.spark.sql.{DataFrame, Dataset, SparkSession}
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.plans.logical.LocalRelation
 import org.apache.spark.sql.execution._
-import org.apache.spark.sql.execution.datasources.{BasicWriteJobStatsTracker, FileFormatWriter, WriteJobStatsTracker}
+import org.apache.spark.sql.execution.datasources.{BasicWriteJobStatsTracker, FileFormatWriter, V1WritesUtils, WriteJobStatsTracker}
 import org.apache.spark.sql.functions.{col, to_json}
 import org.apache.spark.sql.types.{StringType, StructField, StructType}
 import org.apache.spark.util.SerializableConfiguration
@@ -194,7 +194,7 @@ trait TransactionalWrite extends DeltaLogging { self: OptimisticTransactionImpl 
     val projectList: Seq[NamedExpression] = plan.output.map {
       case p if partSet.contains(p) && p.dataType == StringType =>
         needConvert = true
-        Alias(FileFormatWriter.Empty2Null(p), p.name)()
+        Alias(V1WritesUtils.Empty2Null(p), p.name)()
       case attr => attr
     }
     if (needConvert) ProjectExec(projectList, plan) else plan
