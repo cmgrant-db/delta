@@ -37,6 +37,7 @@ import org.apache.spark.sql.catalyst.util.quietly
 import org.apache.spark.sql.execution.streaming.MemoryStream
 import org.apache.spark.sql.functions.{current_timestamp, lit}
 import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.internal.SQLConf.{PARTITION_OVERWRITE_MODE, PartitionOverwriteMode}
 import org.apache.spark.sql.streaming.{StreamingQueryException, Trigger}
 import org.apache.spark.sql.test.SharedSparkSession
 import org.apache.spark.sql.types.{ArrayType, DateType, IntegerType, MetadataBuilder, StringType, StructField, StructType, TimestampType}
@@ -209,6 +210,13 @@ trait GeneratedColumnSuiteBase extends GeneratedColumnTest {
      assert(errMsg.contains(str))
   }
 
+  protected def testTableUpdateDPO(
+    testName: String)(updateFunc: (String, String) => Seq[Row]): Unit = {
+    withSQLConf(PARTITION_OVERWRITE_MODE.key -> PartitionOverwriteMode.DYNAMIC.toString) {
+      testTableUpdate("dpo_" + testName)(updateFunc)
+    }
+  }
+
   testTableUpdate("append_data") { (table, path) =>
     Seq(
       Tuple5(1L, "foo", "2020-10-11 12:30:30", 100, "2020-11-12")
@@ -261,12 +269,41 @@ trait GeneratedColumnSuiteBase extends GeneratedColumnTest {
       100, 1000, sqlDate("2020-11-12")) :: Nil
   }
 
-
   testTableUpdate("insert_into_values_provide_all_columns") { (table, path) =>
     sql(s"INSERT INTO $table VALUES" +
       s"(1, 11, 'foo', '2020-10-11', '2020-10-11 12:30:30', 100, 1000, '2020-11-12')")
     Row(1L, 11L, "foo", sqlDate("2020-10-11"), sqlTimestamp("2020-10-11 12:30:30"),
       100, 1000, sqlDate("2020-11-12")) :: Nil
+  }
+
+  testTableUpdate("insert_into_by_name_values_provide_all_columns") { (table, _) =>
+    sql(s"INSERT INTO $table (c5, c6, c7_g_p, c8, c1, c2_g, c3_p, c4_g_p) VALUES" +
+      s"('2020-10-11 12:30:30', 100, 1000, '2020-11-12', 1, 11, 'foo', '2020-10-11')")
+    Row(1L, 11L, "foo", sqlDate("2020-10-11"), sqlTimestamp("2020-10-11 12:30:30"),
+      100, 1000, sqlDate("2020-11-12")) :: Nil
+  }
+
+  testTableUpdate("insert_into_by_name_values_not_provide_generated_columns") { (table, _) =>
+    sql(s"INSERT INTO $table (c6, c8, c1, c3_p, c5) VALUES" +
+      s"(100, '2020-11-12', 1L, 'foo', '2020-10-11 12:30:30')")
+    Row(1L, 11L, "foo", sqlDate("2020-10-11"), sqlTimestamp("2020-10-11 12:30:30"),
+      100, 1000, sqlDate("2020-11-12")) :: Nil
+  }
+
+  testTableUpdate("insert_into_by_name_values_with_some_generated_columns") { (table, _) =>
+    sql(s"INSERT INTO $table (c5, c6, c8, c1, c3_p, c4_g_p) VALUES" +
+      s"('2020-10-11 12:30:30', 100, '2020-11-12', 1L, 'foo', '2020-10-11')")
+    Row(1L, 11L, "foo", sqlDate("2020-10-11"), sqlTimestamp("2020-10-11 12:30:30"),
+      100, 1000, sqlDate("2020-11-12")) :: Nil
+  }
+
+  testTableUpdate("insert_into_by_name_values_not_provide_normal_columns") { (table, _) =>
+    val e = intercept[AnalysisException] {
+      sql(s"INSERT INTO $table (c6, c8, c1, c3_p) VALUES" +
+        s"(100, '2020-11-12', 1L, 'foo')")
+    }
+    assert(e.getMessage.contains("Column c5 is not specified in INSERT"))
+    Nil
   }
 
 
@@ -291,6 +328,80 @@ trait GeneratedColumnSuiteBase extends GeneratedColumnTest {
       100, 1000, sqlDate("2020-11-12")) :: Nil
   }
 
+  testTableUpdate("insert_overwrite_by_name_values_provide_all_columns") { (table, _) =>
+    sql(s"INSERT OVERWRITE $table (c5, c6, c7_g_p, c8, c1, c2_g, c3_p, c4_g_p) VALUES" +
+      s"('2020-10-11 12:30:30', 100, 1000, '2020-11-12', 1, 11, 'foo', '2020-10-11')")
+    Row(1L, 11L, "foo", sqlDate("2020-10-11"), sqlTimestamp("2020-10-11 12:30:30"),
+      100, 1000, sqlDate("2020-11-12")) :: Nil
+  }
+
+  testTableUpdate("insert_overwrite_by_name_values_not_provide_generated_columns") { (table, _) =>
+    sql(s"INSERT OVERWRITE $table (c6, c8, c1, c3_p, c5) VALUES" +
+      s"(100, '2020-11-12', 1L, 'foo', '2020-10-11 12:30:30')")
+    Row(1L, 11L, "foo", sqlDate("2020-10-11"), sqlTimestamp("2020-10-11 12:30:30"),
+      100, 1000, sqlDate("2020-11-12")) :: Nil
+  }
+
+  testTableUpdate("insert_overwrite_by_name_values_with_some_generated_columns") { (table, _) =>
+    sql(s"INSERT OVERWRITE $table (c5, c6, c8, c1, c3_p, c4_g_p) VALUES" +
+      s"('2020-10-11 12:30:30', 100, '2020-11-12', 1L, 'foo', '2020-10-11')")
+    Row(1L, 11L, "foo", sqlDate("2020-10-11"), sqlTimestamp("2020-10-11 12:30:30"),
+      100, 1000, sqlDate("2020-11-12")) :: Nil
+  }
+
+  testTableUpdate("insert_overwrite_by_name_values_not_provide_normal_columns") { (table, _) =>
+    val e = intercept[AnalysisException] {
+      sql(s"INSERT OVERWRITE $table (c6, c8, c1, c3_p) VALUES" +
+        s"(100, '2020-11-12', 1L, 'foo')")
+    }
+    assert(e.getMessage.contains("Column c5 is not specified in INSERT"))
+    Nil
+  }
+
+  testTableUpdateDPO("insert_overwrite_values_provide_all_columns") { (table, path) =>
+    sql(s"INSERT OVERWRITE TABLE $table VALUES" +
+      s"(1, 11, 'foo', '2020-10-11', '2020-10-11 12:30:30', 100, 1000, '2020-11-12')")
+    Row(1L, 11L, "foo", sqlDate("2020-10-11"), sqlTimestamp("2020-10-11 12:30:30"),
+      100, 1000, sqlDate("2020-11-12")) :: Nil
+  }
+
+  testTableUpdateDPO("insert_overwrite_select_provide_all_columns") { (table, path) =>
+    sql(s"INSERT OVERWRITE TABLE $table SELECT " +
+      s"1, 11, 'foo', '2020-10-11', '2020-10-11 12:30:30', 100, 1000, '2020-11-12'")
+    Row(1L, 11L, "foo", sqlDate("2020-10-11"), sqlTimestamp("2020-10-11 12:30:30"),
+      100, 1000, sqlDate("2020-11-12")) :: Nil
+  }
+
+  testTableUpdateDPO("insert_overwrite_by_name_values_provide_all_columns") { (table, _) =>
+    sql(s"INSERT OVERWRITE $table (c5, c6, c7_g_p, c8, c1, c2_g, c3_p, c4_g_p) VALUES" +
+      s"('2020-10-11 12:30:30', 100, 1000, '2020-11-12', 1, 11, 'foo', '2020-10-11')")
+    Row(1L, 11L, "foo", sqlDate("2020-10-11"), sqlTimestamp("2020-10-11 12:30:30"),
+      100, 1000, sqlDate("2020-11-12")) :: Nil
+  }
+
+  testTableUpdateDPO(
+    "insert_overwrite_by_name_values_not_provide_generated_columns") { (table, _) =>
+    sql(s"INSERT OVERWRITE $table (c6, c8, c1, c3_p, c5) VALUES" +
+      s"(100, '2020-11-12', 1L, 'foo', '2020-10-11 12:30:30')")
+    Row(1L, 11L, "foo", sqlDate("2020-10-11"), sqlTimestamp("2020-10-11 12:30:30"),
+      100, 1000, sqlDate("2020-11-12")) :: Nil
+  }
+
+  testTableUpdateDPO("insert_overwrite_by_name_values_with_some_generated_columns") { (table, _) =>
+    sql(s"INSERT OVERWRITE $table (c5, c6, c8, c1, c3_p, c4_g_p) VALUES" +
+      s"('2020-10-11 12:30:30', 100, '2020-11-12', 1L, 'foo', '2020-10-11')")
+    Row(1L, 11L, "foo", sqlDate("2020-10-11"), sqlTimestamp("2020-10-11 12:30:30"),
+      100, 1000, sqlDate("2020-11-12")) :: Nil
+  }
+
+  testTableUpdateDPO("insert_overwrite_by_name_values_not_provide_normal_columns") { (table, _) =>
+    val e = intercept[AnalysisException] {
+      sql(s"INSERT OVERWRITE $table (c6, c8, c1, c3_p) VALUES" +
+        s"(100, '2020-11-12', 1L, 'foo')")
+    }
+    assert(e.getMessage.contains("Column c5 is not specified in INSERT"))
+    Nil
+  }
 
   testTableUpdate("delete") { (table, path) =>
     Seq(
@@ -631,6 +742,33 @@ trait GeneratedColumnSuiteBase extends GeneratedColumnTest {
           "CHECK constraint Generated Column (c2 <=> CONCAT(c1, 'y')) " +
             "violated by row with values")
       }
+    }
+  }
+
+  test("insert: dot in column names and case insensitive") {
+    withTableName("dot_in_column_names") { table =>
+      createTable(table, None, "`a.b` STRING, `c.d` STRING", Map("a.b" -> "CONCAT(`c.d`, 'y')"),
+        partitionColumns = "a.b" :: Nil)
+      sql(s"INSERT INTO $table VALUES('xy', 'x')")
+      sql(s"INSERT INTO $table (`c.D`, `a.B`) VALUES('x', 'xy')")
+      assert(intercept[AnalysisException] {
+        sql(s"INSERT INTO $table (`a.B`) VALUES('xy')")
+      }.getMessage.contains("Column c.d is not specified in INSERT"))
+      sql(s"INSERT INTO $table (`c.D`) VALUES('x')")
+      sql(s"INSERT INTO $table PARTITION (`a.B`='xy') (`c.D`) VALUES('x')")
+      checkAnswer(sql(s"SELECT * from $table"), Array.fill(4)(Row("xy", "x")))
+
+      sql(s"INSERT OVERWRITE $table VALUES('xy', 'x')")
+      checkAnswer(sql(s"SELECT * from $table"), Row("xy", "x") :: Nil)
+      sql(s"INSERT OVERWRITE $table (`c.D`, `a.B`) VALUES('x', 'xy')")
+      checkAnswer(sql(s"SELECT * from $table"), Row("xy", "x") :: Nil)
+      assert(intercept[AnalysisException] {
+        sql(s"INSERT OVERWRITE $table (`a.B`) VALUES('xy')")
+      }.getMessage.contains("Column c.d is not specified in INSERT"))
+      sql(s"INSERT OVERWRITE $table (`c.D`) VALUES('x')")
+      checkAnswer(sql(s"SELECT * from $table"), Row("xy", "x") :: Nil)
+      sql(s"INSERT OVERWRITE $table PARTITION (`a.B`='xy') (`c.D`) VALUES('x')")
+      checkAnswer(sql(s"SELECT * from $table"), Row("xy", "x") :: Nil)
     }
   }
 

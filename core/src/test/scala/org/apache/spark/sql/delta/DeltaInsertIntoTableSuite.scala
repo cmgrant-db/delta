@@ -75,6 +75,100 @@ class DeltaInsertIntoSQLSuite
     }
   }
 
+  test("insertInto: append by name") {
+    import testImplicits._
+    val t1 = "tbl"
+    withTable(t1) {
+      sql(s"CREATE TABLE $t1 (id bigint, data string) USING $v2Format")
+      val df = Seq((1L, "a"), (2L, "b"), (3L, "c")).toDF("id", "data")
+      sql(s"INSERT INTO $t1(id, data) VALUES(1L, 'a')")
+      // Can be in a different order
+      sql(s"INSERT INTO $t1(data, id) VALUES('b', 2L)")
+      // Can be casted automatically
+      sql(s"INSERT INTO $t1(data, id) VALUES('c', 3)")
+      verifyTable(t1, df)
+      // Missing columns
+      assert(intercept[AnalysisException] {
+        sql(s"INSERT INTO $t1(data) VALUES(4)")
+      }.getMessage.contains("Column id is not specified in INSERT"))
+      // Missing columns with matching dataType
+      assert(intercept[AnalysisException] {
+        sql(s"INSERT INTO $t1(data) VALUES('b')")
+      }.getMessage.contains("Column id is not specified in INSERT"))
+      // Duplicate columns
+      assert(intercept[AnalysisException] {
+        sql(s"INSERT INTO $t1(data, data) VALUES(5)")
+      }.getMessage.contains("[COLUMN_ALREADY_EXISTS] The column `data` already exists."))
+    }
+  }
+
+  test("insertInto: overwrite by name") {
+    import testImplicits._
+    val t1 = "tbl"
+    withTable(t1) {
+      sql(s"CREATE TABLE $t1 (id bigint, data string) USING $v2Format")
+      sql(s"INSERT OVERWRITE $t1(id, data) VALUES(1L, 'a')")
+      verifyTable(t1, Seq((1L, "a")).toDF("id", "data"))
+      // Can be in a different order
+      sql(s"INSERT OVERWRITE $t1(data, id) VALUES('b', 2L)")
+      verifyTable(t1, Seq((2L, "b")).toDF("id", "data"))
+      // Can be casted automatically
+      sql(s"INSERT OVERWRITE $t1(data, id) VALUES('c', 3)")
+      verifyTable(t1, Seq((3L, "c")).toDF("id", "data"))
+      // Missing columns
+      assert(intercept[AnalysisException] {
+        sql(s"INSERT OVERWRITE $t1(data) VALUES(4)")
+      }.getMessage.contains("Column id is not specified in INSERT"))
+      // Missing columns with matching datatype
+      assert(intercept[AnalysisException] {
+        sql(s"INSERT OVERWRITE $t1(data) VALUES(4L)")
+      }.getMessage.contains("Column id is not specified in INSERT"))
+      // Duplicate columns
+      assert(intercept[AnalysisException] {
+        sql(s"INSERT OVERWRITE $t1(data, data) VALUES(5)")
+      }.getMessage.contains("[COLUMN_ALREADY_EXISTS] The column `data` already exists"))
+    }
+  }
+
+  dynamicOverwriteTest("insertInto: dynamic overwrite by name") {
+    import testImplicits._
+    val t1 = "tbl"
+    withTable(t1) {
+      sql(s"CREATE TABLE $t1 (id bigint, data string, data2 string) " +
+        s"USING $v2Format PARTITIONED BY (id)")
+      sql(s"INSERT OVERWRITE $t1(id, data, data2) VALUES(1L, 'a', 'b')")
+      verifyTable(t1, Seq((1L, "a", "b")).toDF("id", "data", "data2"))
+      // Can be in a different order
+      sql(s"INSERT OVERWRITE $t1(data, data2, id) VALUES('b', 'd', 2L)")
+      verifyTable(t1, Seq((1L, "a", "b"), (2L, "b", "d")).toDF("id", "data", "data2"))
+      // Can be casted automatically
+      sql(s"INSERT OVERWRITE $t1(data, data2, id) VALUES('c', 'e', 1)")
+      verifyTable(t1, Seq((1L, "c", "e"), (2L, "b", "d")).toDF("id", "data", "data2"))
+      // Missing columns
+      assert(intercept[AnalysisException] {
+        sql(s"INSERT OVERWRITE $t1(data, id) VALUES('a', 4)")
+      }.getMessage.contains("Column data2 is not specified in INSERT"))
+      // Missing columns with matching datatype
+      assert(intercept[AnalysisException] {
+        sql(s"INSERT OVERWRITE $t1(data, id) VALUES('a', 4L)")
+      }.getMessage.contains("Column data2 is not specified in INSERT"))
+      // Duplicate columns
+      assert(intercept[AnalysisException] {
+        sql(s"INSERT OVERWRITE $t1(data, data) VALUES(5)")
+      }.getMessage.contains("[COLUMN_ALREADY_EXISTS] The column `data` already exists"))
+    }
+  }
+
+  test("insertInto: static partition column name should not be used in the column list") {
+    withTable("t") {
+      sql(s"CREATE TABLE t(i STRING, c string) USING $v2Format PARTITIONED BY (c)")
+      val e = intercept[AnalysisException] {
+        sql("INSERT OVERWRITE t PARTITION (c='1') (c) VALUES ('2')")
+      }
+      assert(e.getMessage.contains(
+        "static partition column c is also specified in the column list"))
+    }
+  }
 }
 
 class DeltaInsertIntoSQLByPathSuite
@@ -298,6 +392,14 @@ abstract class DeltaInsertIntoTests(
     verifyTable(t1, df)
   }
 
+  test("insertInto: append cast automatically") {
+    val t1 = "tbl"
+    sql(s"CREATE TABLE $t1 (id bigint, data string) USING $v2Format")
+    val df = Seq((1, "a"), (2, "b"), (3, "c")).toDF("id", "data")
+    doInsert(t1, df)
+    verifyTable(t1, df)
+  }
+
   test("insertInto: append partitioned table") {
     val t1 = "tbl"
     withTable(t1) {
@@ -349,16 +451,45 @@ abstract class DeltaInsertIntoTests(
     }
   }
 
+  test("insertInto: overwrite cast automatically") {
+    val t1 = "tbl"
+    sql(s"CREATE TABLE $t1 (id bigint, data string) USING $v2Format")
+    val df = Seq((1L, "a"), (2L, "b"), (3L, "c")).toDF("id", "data")
+    val df2 = Seq((4L, "d"), (5L, "e"), (6L, "f")).toDF("id", "data")
+    val df2c = Seq((4, "d"), (5, "e"), (6, "f")).toDF("id", "data")
+    doInsert(t1, df)
+    doInsert(t1, df2c, SaveMode.Overwrite)
+    verifyTable(t1, df2)
+  }
+
   test("insertInto: fails when missing a column") {
     val t1 = "tbl"
     sql(s"CREATE TABLE $t1 (id bigint, data string, missing string) USING $v2Format")
-    val df = Seq((1L, "a"), (2L, "b"), (3L, "c")).toDF("id", "data")
-    val exc = intercept[AnalysisException] {
-      doInsert(t1, df)
+    val df1 = Seq((1L, "a"), (2L, "b"), (3L, "c")).toDF("id", "data")
+    // mismatched datatype
+    val df2 = Seq((1, "a"), (2, "b"), (3, "c")).toDF("id", "data")
+    for (df <- Seq(df1, df2)) {
+      val exc = intercept[AnalysisException] {
+        doInsert(t1, df)
+      }
+      verifyTable(t1, Seq.empty[(Long, String, String)].toDF("id", "data", "missing"))
+      assert(exc.getMessage.contains("not enough data columns"))
     }
+  }
 
-    verifyTable(t1, Seq.empty[(Long, String, String)].toDF("id", "data", "missing"))
-    assert(exc.getMessage.contains("not enough data columns"))
+  test("insertInto: overwrite fails when missing a column") {
+    val t1 = "tbl"
+    sql(s"CREATE TABLE $t1 (id bigint, data string, missing string) USING $v2Format")
+    val df1 = Seq((1L, "a"), (2L, "b"), (3L, "c")).toDF("id", "data")
+    // mismatched datatype
+    val df2 = Seq((1, "a"), (2, "b"), (3, "c")).toDF("id", "data")
+    for (df <- Seq(df1, df2)) {
+      val exc = intercept[AnalysisException] {
+        doInsert(t1, df, SaveMode.Overwrite)
+      }
+      verifyTable(t1, Seq.empty[(Long, String, String)].toDF("id", "data", "missing"))
+      assert(exc.getMessage.contains("not enough data columns"))
+    }
   }
 
   // This behavior is specific to Delta
@@ -601,6 +732,37 @@ abstract class DeltaInsertIntoTests(
 
       val df = Seq((1L, "a"), (2L, "b"), (3L, "c"), (4L, "keep")).toDF("id", "data")
       verifyTable(t1, df)
+    }
+  }
+
+  dynamicOverwriteTest(
+    "insertInto: overwrite partitioned table in dynamic mode automatic casting") {
+    val t1 = "tbl"
+    withTable(t1) {
+      sql(s"CREATE TABLE $t1 (id bigint, data string) USING $v2Format PARTITIONED BY (id)")
+      val init = Seq((2L, "dummy"), (4L, "keep")).toDF("id", "data")
+      doInsert(t1, init)
+
+      val df = Seq((1L, "a"), (2L, "b"), (3L, "c")).toDF("id", "data")
+      val dfc = Seq((1, "a"), (2, "b"), (3, "c")).toDF("id", "data")
+      doInsert(t1, df, SaveMode.Overwrite)
+
+      verifyTable(t1, df.union(sql("SELECT 4L, 'keep'")))
+    }
+  }
+
+  dynamicOverwriteTest("insertInto: overwrite fails when missing a column in dynamic mode") {
+    val t1 = "tbl"
+    sql(s"CREATE TABLE $t1 (id bigint, data string, missing string) USING $v2Format")
+    val df1 = Seq((1L, "a"), (2L, "b"), (3L, "c")).toDF("id", "data")
+    // mismatched datatype
+    val df2 = Seq((1, "a"), (2, "b"), (3, "c")).toDF("id", "data")
+    for (df <- Seq(df1, df2)) {
+      val exc = intercept[AnalysisException] {
+        doInsert(t1, df, SaveMode.Overwrite)
+      }
+      verifyTable(t1, Seq.empty[(Long, String, String)].toDF("id", "data", "missing"))
+      assert(exc.getMessage.contains("not enough data columns"))
     }
   }
 

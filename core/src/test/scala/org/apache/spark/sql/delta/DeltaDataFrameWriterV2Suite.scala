@@ -62,7 +62,7 @@ trait OpenSourceDataFrameWriterV2Tests
   }
 
   protected def catalogPrefix: String = {
-    ""
+    "spark_catalog."
   }
 
   protected def getProperties(table: Table): Map[String, String] = {
@@ -228,7 +228,7 @@ trait OpenSourceDataFrameWriterV2Tests
         .writeTo("table_name").overwritePartitions()
     }
 
-    assert(e.getMessage.contains("schema mismatch"))
+    assert(e.getMessage.contains("Cannot find d in table columns: id, data"))
 
     checkAnswer(
       spark.table("table_name"),
@@ -683,6 +683,16 @@ class DeltaDataFrameWriterV2Suite
       }
     }
   }
+
+  // todo: test that we don't need to provide all columns for DF append write
+  test("df_append_missing_cols") {
+    val table = "df_append_missing_cols"
+    withTable(table) {
+      Seq((1, "a")).toDF("col1", "col2").write.format("delta").saveAsTable(table)
+      Seq((1)).toDF("col1").write.format("delta").mode("append").saveAsTable(table)
+    }
+  }
+
 }
 
 trait DeltaDataFrameWriterV2ColumnMappingSuiteBase extends DeltaColumnMappingSelectedTestMixin {
