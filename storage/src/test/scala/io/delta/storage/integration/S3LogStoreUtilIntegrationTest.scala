@@ -16,6 +16,7 @@ import scala.math.ceil
  * environment variables
  * S3_LOG_STORE_UTIL_TEST_BUCKET=some-s3-bucket-name
  * S3_LOG_STORE_UTIL_TEST_RUN_UID=some-uuid-for-test-run
+ * AWS_REGION=some-aws-region
  * and running
  * python run-integration-tests.py --s3-log-store-util-only
  *
