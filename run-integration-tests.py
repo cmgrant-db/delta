@@ -196,7 +196,7 @@ def run_s3_log_store_util_integration_tests():
         raise
 
 
-def run_iceberg_integration_tests(root_dir, version, spark_version, iceberg_version, use_local):
+def run_iceberg_integration_tests(root_dir, version, extr_maven_repo, spark_version, iceberg_version, use_local):
     print("\n\n##### Running Iceberg tests on version %s #####" % str(version))
     clear_artifact_cache()
     if use_local:
@@ -215,7 +215,7 @@ def run_iceberg_integration_tests(root_dir, version, spark_version, iceberg_vers
         "io.delta:delta-iceberg_2.12:" + version,
         "org.apache.iceberg:iceberg-spark-runtime-{}_2.12:{}".format(spark_version, iceberg_version)])
 
-    repo = ""
+    repo = extra_maven_repo if extra_maven_repo else ""
 
     for test_file in test_files:
         try:
@@ -441,7 +441,7 @@ if __name__ == "__main__":
 
     if args.run_iceberg_integration_tests:
         run_iceberg_integration_tests(
-            root_dir, args.version,
+            root_dir, args.version, args.maven_repo
             args.iceberg_spark_version, args.iceberg_lib_version, args.use_local)
         quit()
 
