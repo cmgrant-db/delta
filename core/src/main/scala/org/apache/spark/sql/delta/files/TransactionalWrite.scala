@@ -194,7 +194,7 @@ trait TransactionalWrite extends DeltaLogging { self: OptimisticTransactionImpl 
     val projectList: Seq[NamedExpression] = plan.output.map {
       case p if partSet.contains(p) && p.dataType == StringType =>
         needConvert = true
-        Alias(V1WritesUtils.Empty2Null(p), p.name)()
+        Alias(Empty2Null(p), p.name)()
       case attr => attr
     }
     if (needConvert) ProjectExec(projectList, plan) else plan

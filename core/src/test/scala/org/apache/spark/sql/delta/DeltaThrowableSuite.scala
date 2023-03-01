@@ -52,8 +52,6 @@ class DeltaThrowableSuite extends SparkFunSuite {
    }}}
    */
 
-  private val regenerateGoldenFiles: Boolean = System.getenv("SPARK_GENERATE_GOLDEN_FILES") == "1"
-
   def checkIfUnique(ss: Seq[Any]): Unit = {
     val duplicatedKeys = ss.groupBy(identity).mapValues(_.size).filter(_._2 > 1).keys.toSeq
     assert(duplicatedKeys.isEmpty)
