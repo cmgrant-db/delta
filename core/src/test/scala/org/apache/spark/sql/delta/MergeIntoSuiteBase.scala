@@ -624,7 +624,7 @@ abstract class MergeIntoSuiteBase
           insert = "(key2, value) VALUES (3, 4)")
       }.getMessage
 
-      errorContains(e, "Cannot resolve key1 in UPDATE clause")
+      errorContains(e, "cannot resolve key1 in merge command")
       errorContains(e, "key2") // should show key2 as a valid name in target columns
 
       // to-insert columns have source table reference
@@ -637,7 +637,7 @@ abstract class MergeIntoSuiteBase
           insert = "(key1, value) VALUES (3, 4)")
       }.getMessage
 
-      errorContains(e, "Cannot resolve key1 in INSERT clause")
+      errorContains(e, "Cannot resolve key1 in merge command")
       errorContains(e, "key2") // should contain key2 as a valid name in target columns
 
       // ambiguous reference
@@ -1576,7 +1576,7 @@ abstract class MergeIntoSuiteBase
     mergeOn = "s.key = t.key",
     update(condition = "unknownAttrib > 1", set = "tgtValue = srcValue"))(
     // Should show unknownAttrib as invalid ref and (key, tgtValue, srcValue) as valid column names.
-    errorStrs = "UPDATE condition" :: "unknownAttrib" :: "key" :: "tgtValue" :: "srcValue" :: Nil)
+    errorStrs = "MERGE command" :: "unknownAttrib" :: "key" :: "tgtValue" :: "srcValue" :: Nil)
 
   testAnalysisErrorsInExtendedMerge("update condition - aggregation function")(
     mergeOn = "s.key = t.key",
@@ -1597,7 +1597,7 @@ abstract class MergeIntoSuiteBase
     mergeOn = "s.key = t.key",
     delete(condition = "unknownAttrib > 1"))(
     // Should show unknownAttrib as invalid ref and (key, tgtValue, srcValue) as valid column names.
-    errorStrs = "DELETE condition" :: "unknownAttrib" :: "key" :: "tgtValue" :: "srcValue" :: Nil)
+    errorStrs = "MERGE command" :: "unknownAttrib" :: "key" :: "tgtValue" :: "srcValue" :: Nil)
 
   testAnalysisErrorsInExtendedMerge("delete condition - aggregation function")(
     mergeOn = "s.key = t.key",
@@ -1614,14 +1614,14 @@ abstract class MergeIntoSuiteBase
     insert(condition = "unknownAttrib > 1", values = "(key, tgtValue) VALUES (s.key, s.srcValue)"))(
     // Should show unknownAttrib as invalid ref and (key, srcValue) as valid column names,
     // but not show tgtValue as a valid name as target columns cannot be present in insert clause.
-    errorStrs = "INSERT condition" :: "unknownAttrib" :: "key" :: "srcValue" :: Nil,
+    errorStrs = "MERGE command" :: "unknownAttrib" :: "key" :: "srcValue" :: Nil,
     notErrorStrs = "tgtValue")
 
   testAnalysisErrorsInExtendedMerge("insert condition - reference to target table column")(
     mergeOn = "s.key = t.key",
     insert(condition = "tgtValue > 1", values = "(key, tgtValue) VALUES (s.key, s.srcValue)"))(
     // Should show tgtValue as invalid ref and (key, srcValue) as valid column names
-    errorStrs = "INSERT condition" :: "tgtValue" :: "key" :: "srcValue" :: Nil)
+    errorStrs = "MERGE command" :: "tgtValue" :: "key" :: "srcValue" :: Nil)
 
   testAnalysisErrorsInExtendedMerge("insert condition - aggregation function")(
     mergeOn = "s.key = t.key",
@@ -2557,7 +2557,7 @@ abstract class MergeIntoSuiteBase
     clauses = update(set = "key = s.key, value = s.value, extra = s.extra") :: Nil,
     expected = ((0, 0, null) +: (3, 30, null) +: (1, 1, "extra1") +: Nil)
       .toDF("key", "value", "extra"),
-    expectErrorWithoutEvolutionContains = "cannot resolve extra in UPDATE clause")
+    expectErrorWithoutEvolutionContains = "cannot resolve extra in MERGE command")
 
   testEvolution("new column updated with value from existing column")(
     targetData = Seq((0, 0), (1, 10), (3, 30)).toDF("key", "value"),
@@ -2567,7 +2567,7 @@ abstract class MergeIntoSuiteBase
     expected = ((0, 0, null) +: (1, 10, 1) +: (3, 30, null) +: Nil)
       .asInstanceOf[List[(Integer, Integer, Integer)]]
       .toDF("key", "value", "extra"),
-    expectErrorWithoutEvolutionContains = "cannot resolve extra in UPDATE clause")
+    expectErrorWithoutEvolutionContains = "cannot resolve extra in MERGE command")
 
   // Schema evolution with INSERT alone
   testEvolution("new column with insert values")(
@@ -2576,7 +2576,7 @@ abstract class MergeIntoSuiteBase
     clauses = insert(values = "(key, value, extra) VALUES (s.key, s.value, s.extra)") :: Nil,
     expected = ((0, 0, null) +: (1, 10, null) +: (3, 30, null) +: (2, 2, "extra2") +: Nil)
       .toDF("key", "value", "extra"),
-    expectErrorWithoutEvolutionContains = "cannot resolve extra in INSERT clause")
+    expectErrorWithoutEvolutionContains = "cannot resolve extra in MERGE command")
 
    testEvolution("new column inserted with value from existing column")(
     targetData = Seq((0, 0), (1, 10), (3, 30)).toDF("key", "value"),
@@ -2586,7 +2586,7 @@ abstract class MergeIntoSuiteBase
     expected = ((0, 0, null) +: (1, 10, null) +: (3, 30, null) +: (2, null, 2) +: Nil)
       .asInstanceOf[List[(Integer, Integer, Integer)]]
       .toDF("key", "value", "extra"),
-    expectErrorWithoutEvolutionContains = "cannot resolve extra in INSERT clause")
+    expectErrorWithoutEvolutionContains = "cannot resolve extra in MERGE command")
 
   // Schema evolution (UPDATE) with two new columns in the source but only one added to the target.
   testEvolution("new column with update set and column not updated")(
@@ -2597,7 +2597,7 @@ abstract class MergeIntoSuiteBase
     expected = ((0, 0, null) +: (1, 10, "extra1") +: (3, 30, null) +: Nil)
       .asInstanceOf[List[(Integer, Integer, String)]]
       .toDF("key", "value", "extra"),
-    expectErrorWithoutEvolutionContains = "cannot resolve extra in UPDATE clause")
+    expectErrorWithoutEvolutionContains = "cannot resolve extra in MERGE command")
 
   testEvolution("new column updated from other new column")(
     targetData = Seq((0, 0), (1, 10), (3, 30)).toDF("key", "value"),
@@ -2607,7 +2607,7 @@ abstract class MergeIntoSuiteBase
     expected = ((0, 0, null) +: (1, 10, "unused1") +: (3, 30, null) +: Nil)
       .asInstanceOf[List[(Integer, Integer, String)]]
       .toDF("key", "value", "extra"),
-    expectErrorWithoutEvolutionContains = "cannot resolve extra in UPDATE clause")
+    expectErrorWithoutEvolutionContains = "cannot resolve extra in MERGE command")
 
   // Schema evolution (INSERT) with two new columns in the source but only one added to the target.
   testEvolution("new column with insert values and column not inserted")(
@@ -2618,7 +2618,7 @@ abstract class MergeIntoSuiteBase
     expected = ((0, 0, null) +: (1, 10, null) +: (3, 30, null) +: (2, null, "extra2") +: Nil)
       .asInstanceOf[List[(Integer, Integer, String)]]
       .toDF("key", "value", "extra"),
-    expectErrorWithoutEvolutionContains = "cannot resolve extra in INSERT clause")
+    expectErrorWithoutEvolutionContains = "cannot resolve extra in MERGE command")
 
   testEvolution("new column inserted from other new column")(
     targetData = Seq((0, 0), (1, 10), (3, 30)).toDF("key", "value"),
@@ -2628,7 +2628,7 @@ abstract class MergeIntoSuiteBase
     expected = ((0, 0, null) +: (1, 10, null) +: (3, 30, null) +: (2, null, "unused2") +: Nil)
       .asInstanceOf[List[(Integer, Integer, String)]]
       .toDF("key", "value", "extra"),
-    expectErrorWithoutEvolutionContains = "cannot resolve extra in INSERT clause")
+    expectErrorWithoutEvolutionContains = "cannot resolve extra in MERGE command")
 
   // Schema evolution with two new columns added by UPDATE and INSERT resp.
   testEvolution("new column added by insert and other new column added by update")(
@@ -2644,7 +2644,7 @@ abstract class MergeIntoSuiteBase
        (2, null, null, "other2") +: Nil)
       .asInstanceOf[List[(Integer, Integer, String, String)]]
       .toDF("key", "value", "extra", "other"),
-    expectErrorWithoutEvolutionContains = "cannot resolve extra in UPDATE clause")
+    expectErrorWithoutEvolutionContains = "cannot resolve extra in MERGE command")
 
   // Nested Schema evolution with UPDATE alone
   testNestedStructsEvolution("new nested source field added when updating top-level column")(
@@ -2785,15 +2785,15 @@ abstract class MergeIntoSuiteBase
     targetData = Seq((0, 0), (1, 10), (3, 30)).toDF("key", "value"),
     sourceData = Seq((1, 1, "extra1"), (2, 2, "extra2")).toDF("key", "value", "extra"),
     clauses = update(set = "nonexistent = s.extra") :: Nil,
-    expectErrorContains = "cannot resolve nonexistent in UPDATE clause",
-    expectErrorWithoutEvolutionContains = "cannot resolve nonexistent in UPDATE clause")
+    expectErrorContains = "cannot resolve nonexistent in MERGE command",
+    expectErrorWithoutEvolutionContains = "cannot resolve nonexistent in MERGE command")
 
   testEvolution("insert values nonexistent column")(
     targetData = Seq((0, 0), (1, 10), (3, 30)).toDF("key", "value"),
     sourceData = Seq((1, 1, "extra1"), (2, 2, "extra2")).toDF("key", "value", "extra"),
     clauses = insert(values = "(nonexistent) VALUES (s.extra)") :: Nil,
-    expectErrorContains = "cannot resolve nonexistent in INSERT clause",
-    expectErrorWithoutEvolutionContains = "cannot resolve nonexistent in INSERT clause")
+    expectErrorContains = "cannot resolve nonexistent in MERGE command",
+    expectErrorWithoutEvolutionContains = "cannot resolve nonexistent in MERGE command")
 
   testEvolution("new column with update set and update *")(
     targetData = Seq((0, 0), (1, 10), (2, 20)).toDF("key", "value"),
@@ -2814,7 +2814,7 @@ abstract class MergeIntoSuiteBase
     clauses = update("*") :: Nil,
     // update went through even though `extra` wasn't there
     expected = ((0, 0, 0) +: (1, 1, 10) +: (3, 30, 30) +: Nil).toDF("key", "value", "extra"),
-    expectErrorWithoutEvolutionContains = "cannot resolve extra in UPDATE clause"
+    expectErrorWithoutEvolutionContains = "cannot resolve extra in MERGE command"
   )
 
   testEvolution("insert * with column not in source")(
@@ -2825,7 +2825,7 @@ abstract class MergeIntoSuiteBase
     expected = ((0, 0, 0) +: (1, 10, 10) +: (2, 2, null) +: (3, 30, 30) +: Nil)
       .asInstanceOf[List[(Integer, Integer, Integer)]]
       .toDF("key", "value", "extra"),
-    expectErrorWithoutEvolutionContains = "cannot resolve extra in INSERT clause"
+    expectErrorWithoutEvolutionContains = "cannot resolve extra in MERGE command"
   )
 
   testEvolution("explicitly insert subset of columns")(
@@ -4659,8 +4659,8 @@ abstract class MergeIntoSuiteBase
     update(condition = "s.key == 3", set = "key = s.key, value = 2 * srcValue"),
     insert(condition = null, values = "(key, value) VALUES (s.key, srcValue)"),
     insert(condition = null, values = "(key, value) VALUES (s.key, 1 + srcValue)"))(
-    errorStrs = "when there are more than one not matched clauses in a merge statement, " +
-      "only the last not matched clause can omit the condition" :: Nil)
+    errorStrs = "when there are more than one not matched [by target] clauses in a merge " +
+      "statement, only the last not matched [by target] clause can omit the condition" :: Nil)
 
   testAnalysisErrorsInUnlimitedClauses("error on multiple update clauses without condition")(
     mergeOn = "s.key = t.key",
@@ -4695,8 +4695,8 @@ abstract class MergeIntoSuiteBase
     update(condition = null, set = "key = s.key, value = srcValue"),
     insert(condition = null, values = "(key, value) VALUES (s.key, srcValue)"),
     insert(condition = "s.key < 3", values = "(key, value) VALUES (s.key, 1 + srcValue)"))(
-    errorStrs = "when there are more than one not matched clauses in a merge statement, " +
-      "only the last not matched clause can omit the condition" :: Nil)
+    errorStrs = "when there are more than one not matched [by target] clauses in a merge " +
+      "statement, only the last not matched [by target] clause can omit the condition" :: Nil)
 
   /* end unlimited number of merge clauses tests */
 
