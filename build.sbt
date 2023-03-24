@@ -73,7 +73,7 @@ lazy val core = (project in file("core"))
       // -- Bump up the genjavadoc version explicitly to 0.18 to work with Scala 2.12
       compilerPlugin("com.typesafe.genjavadoc" %% "genjavadoc-plugin" % "0.18" cross CrossVersion.full)
     ),
-    resolvers += "Spark Staging" at "https://repository.apache.org/content/repositories/orgapachespark-1435",
+    resolvers += "Spark Staging" at "https://repository.apache.org/content/repositories/orgapachespark-1438",
     Compile / packageBin / mappings := (Compile / packageBin / mappings).value ++
       listPythonFiles(baseDirectory.value.getParentFile / "python"),
 
