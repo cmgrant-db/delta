@@ -2981,7 +2981,7 @@ class DeltaTablePropertyValidationFailedException(
     table: String,
     subClass: DeltaTablePropertyValidationFailedSubClass)
   extends RuntimeException(DeltaThrowableHelper.getMessage(
-    errorClass = "DELTA_VIOLATE_TABLE_PROPERTY_VALIDATION_FAILED",
+    errorClass = "DELTA_VIOLATE_TABLE_PROPERTY_VALIDATION_FAILED" + "." + subClass.tag,
     messageParameters = subClass.messageParameters(table)))
     with DeltaThrowable {
   override def getErrorClass: String =

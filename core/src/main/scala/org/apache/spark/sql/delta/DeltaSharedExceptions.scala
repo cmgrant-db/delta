@@ -16,7 +16,10 @@
 
 package org.apache.spark.sql.delta
 
+import org.antlr.v4.runtime.ParserRuleContext
+
 import org.apache.spark.sql.AnalysisException
+import org.apache.spark.sql.catalyst.parser.{ParseException, ParserUtils}
 
 class DeltaAnalysisException(
     errorClass: String, messageParameters: Array[String], cause: Option[Throwable] = None)
@@ -48,3 +51,13 @@ class DeltaUnsupportedOperationException(
     override def getErrorClass: String = errorClass
     def getMessageParametersArray: Array[String] = messageParameters
 }
+
+class DeltaParseException(
+    message: String, // todo: replace this with an error class and use DeltaThrowableHelper?
+    ctx: ParserRuleContext)
+  extends ParseException(
+    Option(ParserUtils.command(ctx)),
+    message,
+    ParserUtils.position(ctx.getStart),
+    ParserUtils.position(ctx.getStop)
+  ) with DeltaThrowable
