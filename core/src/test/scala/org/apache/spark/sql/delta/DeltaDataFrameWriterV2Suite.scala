@@ -62,7 +62,7 @@ trait OpenSourceDataFrameWriterV2Tests
   }
 
   protected def catalogPrefix: String = {
-    ""
+    s"${CatalogManager.SESSION_CATALOG_NAME}."
   }
 
   protected def getProperties(table: Table): Map[String, String] = {
@@ -228,7 +228,7 @@ trait OpenSourceDataFrameWriterV2Tests
         .writeTo("table_name").overwritePartitions()
     }
 
-    assert(e.getMessage.contains("schema mismatch"))
+    assert(e.getMessage.contains("Cannot find d in table columns: id, data"))
 
     checkAnswer(
       spark.table("table_name"),

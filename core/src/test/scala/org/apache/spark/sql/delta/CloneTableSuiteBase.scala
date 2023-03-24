@@ -43,6 +43,7 @@ import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.analysis.NoSuchDatabaseException
 import org.apache.spark.sql.catalyst.catalog.{CatalogTable, CatalogTableType}
 import org.apache.spark.sql.catalyst.expressions.Literal
+import org.apache.spark.sql.connector.catalog.CatalogManager
 import org.apache.spark.sql.execution.datasources.LogicalRelation
 import org.apache.spark.sql.execution.streaming.{CheckpointFileManager, FileSystemBasedCheckpointFileManager, MemoryStream}
 import org.apache.spark.sql.functions.{col, floor, from_json}
@@ -212,7 +213,7 @@ trait CloneTableSuiteBase extends QueryTest
     // scalastyle:on deltahadoopconfiguration
     val qualifiedSourcePath = fs.makeQualified(sourcePath)
     val logSource = if (sourceIsTable) {
-      s"default.$source".toLowerCase(Locale.ROOT)
+      s"${CatalogManager.SESSION_CATALOG_NAME}.default.$source".toLowerCase(Locale.ROOT)
     } else {
       s"$sourceFormat.`$qualifiedSourcePath`"
     }

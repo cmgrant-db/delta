@@ -37,7 +37,7 @@ trait DescribeDeltaDetailSuiteBase extends QueryTest
   import testImplicits._
 
   val catalogAndSchema = {
-    var res = "default."
+    var res = s"$SESSION_CATALOG_NAME.default."
     res
   }
 
