@@ -283,7 +283,7 @@ class DeltaCDCSQLSuite extends DeltaCDCSuiteBase with DeltaColumnMappingTestUtil
       val e = intercept[AnalysisException] {
         sql(s"SELECT * FROM table_changes('$tbl', 0, id)")
       }
-      assert(e.getErrorClass == "MISSING_COLUMN")
+      assert(e.getErrorClass == "UNRESOLVED_COLUMN.WITHOUT_SUGGESTION")
       assert(e.getMessage.contains("Column 'id' does not exist"))
     }
   }

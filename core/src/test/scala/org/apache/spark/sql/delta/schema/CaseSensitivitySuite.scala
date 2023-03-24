@@ -198,7 +198,8 @@ class CaseSensitivitySuite extends QueryTest
         }
         // The error class is renamed in Spark 3.4
         assert(e.getErrorClass == "UNRESOLVED_COLUMN.WITHOUT_SUGGESTION"
-          || e.getErrorClass == "MISSING_COLUMN" )
+          || e.getErrorClass == "MISSING_COLUMN"
+          || e.getErrorClass == "UNRESOLVED_COLUMN.WITH_SUGGESTION")
       }
 
       checkAnswer(
