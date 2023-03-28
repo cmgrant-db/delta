@@ -198,6 +198,7 @@ case class WriteIntoDelta(
     }
     val rearrangeOnly = options.rearrangeOnly
     // TODO: use `SQLConf.READ_SIDE_CHAR_PADDING` after Spark 3.4 is released.
+    // todo: the default value for SQLConf.READ_SIDE_CHAR_PADDING is "true"
     val charPadding = sparkSession.conf.get("spark.sql.readSideCharPadding", "false") == "true"
     val charAsVarchar = sparkSession.conf.get(SQLConf.CHAR_AS_VARCHAR)
     val dataSchema = if (!charAsVarchar && charPadding) {
