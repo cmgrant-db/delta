@@ -76,6 +76,102 @@ class DeltaInsertIntoSQLSuite
     }
   }
 
+  test("insertInto: append by name") {
+    import testImplicits._
+    val t1 = "tbl"
+    withTable(t1) {
+      sql(s"CREATE TABLE $t1 (id bigint, data string) USING $v2Format")
+      val df = Seq((1L, "a"), (2L, "b"), (3L, "c")).toDF("id", "data")
+      sql(s"INSERT INTO $t1(id, data) VALUES(1L, 'a')")
+      // Can be in a different order
+      sql(s"INSERT INTO $t1(data, id) VALUES('b', 2L)")
+      // Can be casted automatically
+      sql(s"INSERT INTO $t1(data, id) VALUES('c', 3)")
+      verifyTable(t1, df)
+      // Missing columns
+      assert(intercept[AnalysisException] {
+        sql(s"INSERT INTO $t1(data) VALUES(4)")
+      }.getMessage.contains("Column id is not specified in INSERT"))
+      // Missing columns with matching dataType
+      assert(intercept[AnalysisException] {
+        sql(s"INSERT INTO $t1(data) VALUES('b')")
+      }.getMessage.contains("Column id is not specified in INSERT"))
+      // Duplicate columns
+      assert(intercept[AnalysisException] {
+        sql(s"INSERT INTO $t1(data, data) VALUES(5)")
+      }.getMessage.contains("[COLUMN_ALREADY_EXISTS] The column `data` already exists."))
+    }
+  }
+
+  test("insertInto: overwrite by name") {
+    import testImplicits._
+    val t1 = "tbl"
+    withTable(t1) {
+      sql(s"CREATE TABLE $t1 (id bigint, data string) USING $v2Format")
+      sql(s"INSERT OVERWRITE $t1(id, data) VALUES(1L, 'a')")
+      verifyTable(t1, Seq((1L, "a")).toDF("id", "data"))
+      // Can be in a different order
+      sql(s"INSERT OVERWRITE $t1(data, id) VALUES('b', 2L)")
+      verifyTable(t1, Seq((2L, "b")).toDF("id", "data"))
+      // Can be casted automatically
+      sql(s"INSERT OVERWRITE $t1(data, id) VALUES('c', 3)")
+      verifyTable(t1, Seq((3L, "c")).toDF("id", "data"))
+      // Missing columns
+      assert(intercept[AnalysisException] {
+        sql(s"INSERT OVERWRITE $t1(data) VALUES(4)")
+      }.getMessage.contains("Column id is not specified in INSERT"))
+      // Missing columns with matching datatype
+      assert(intercept[AnalysisException] {
+        sql(s"INSERT OVERWRITE $t1(data) VALUES(4L)")
+      }.getMessage.contains("Column id is not specified in INSERT"))
+      // Duplicate columns
+      assert(intercept[AnalysisException] {
+        sql(s"INSERT OVERWRITE $t1(data, data) VALUES(5)")
+      }.getMessage.contains("[COLUMN_ALREADY_EXISTS] The column `data` already exists"))
+    }
+  }
+
+  dynamicOverwriteTest("insertInto: dynamic overwrite by name") {
+    import testImplicits._
+    val t1 = "tbl"
+    withTable(t1) {
+      sql(s"CREATE TABLE $t1 (id bigint, data string, data2 string) " +
+        s"USING $v2Format PARTITIONED BY (id)")
+      sql(s"INSERT OVERWRITE $t1(id, data, data2) VALUES(1L, 'a', 'b')")
+      verifyTable(t1, Seq((1L, "a", "b")).toDF("id", "data", "data2"))
+      // Can be in a different order
+      sql(s"INSERT OVERWRITE $t1(data, data2, id) VALUES('b', 'd', 2L)")
+      verifyTable(t1, Seq((1L, "a", "b"), (2L, "b", "d")).toDF("id", "data", "data2"))
+      // Can be casted automatically
+      sql(s"INSERT OVERWRITE $t1(data, data2, id) VALUES('c', 'e', 1)")
+      verifyTable(t1, Seq((1L, "c", "e"), (2L, "b", "d")).toDF("id", "data", "data2"))
+      // Missing columns
+      assert(intercept[AnalysisException] {
+        sql(s"INSERT OVERWRITE $t1(data, id) VALUES('a', 4)")
+      }.getMessage.contains("Column data2 is not specified in INSERT"))
+      // Missing columns with matching datatype
+      assert(intercept[AnalysisException] {
+        sql(s"INSERT OVERWRITE $t1(data, id) VALUES('a', 4L)")
+      }.getMessage.contains("Column data2 is not specified in INSERT"))
+      // Duplicate columns
+      assert(intercept[AnalysisException] {
+        sql(s"INSERT OVERWRITE $t1(data, data) VALUES(5)")
+      }.getMessage.contains("[COLUMN_ALREADY_EXISTS] The column `data` already exists"))
+    }
+  }
+
+  test("insertInto: static partition column name should not be used in the column list") {
+    withTable("t") {
+      sql(s"CREATE TABLE t(i STRING, c string) USING $v2Format PARTITIONED BY (c)")
+      checkError(
+        exception = intercept[AnalysisException] {
+          sql("INSERT OVERWRITE t PARTITION (c='1') (c) VALUES ('2')")
+        },
+        errorClass = "STATIC_PARTITION_COLUMN_IN_INSERT_COLUMN_LIST",
+        parameters = Map("staticName" -> "c"))
+    }
+  }
+
 
   Seq(("ordinal", ""), ("name", "(id, col2, col)")).foreach { case (testName, values) =>
     test(s"INSERT OVERWRITE schema evolution works for array struct types - $testName") {
