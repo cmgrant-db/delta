@@ -93,6 +93,7 @@ class DeltaCatalog extends DelegatingCatalogExtension
       case TableCatalog.PROP_OWNER => false
       case TableCatalog.PROP_EXTERNAL => false
       case "path" => false
+      case "option.path" => false
       case _ => true
     }.toMap
     val (partitionColumns, maybeBucketSpec) = convertTransforms(partitions)
