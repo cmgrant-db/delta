@@ -115,7 +115,7 @@ trait MergeIntoNotMatchedBySourceSuite extends MergeIntoSuiteBase {
     mergeOn = "s.key = t.key",
     updateNotMatched(condition = "unknownAttrib > 1", set = "tgtValue = tgtValue + 1"))(
     // Should show unknownAttrib as invalid ref and (key, tgtValue, srcValue) as valid column names.
-    errorStrs = "UPDATE condition" :: "unknownAttrib" :: "key" :: "tgtValue" :: Nil)
+    errorStrs = "merge command" :: "unknownAttrib" :: "key" :: "tgtValue" :: Nil)
 
   testAnalysisErrorsInExtendedMerge("update not matched condition - aggregation function")(
     mergeOn = "s.key = t.key",
@@ -137,7 +137,7 @@ trait MergeIntoNotMatchedBySourceSuite extends MergeIntoSuiteBase {
   testAnalysisErrorsInExtendedMerge("delete not matched condition - aggregation function")(
     mergeOn = "s.key = t.key",
     deleteNotMatched(condition = "max(0) > 0"))(
-    errorStrs = "DELETE condition" :: "aggregate functions are not supported" :: Nil)
+    errorStrs = "merge command" :: "aggregate functions are not supported" :: Nil)
 
   testAnalysisErrorsInExtendedMerge("delete not matched condition - subquery")(
     mergeOn = "s.key = t.key",
@@ -541,7 +541,7 @@ trait MergeIntoNotMatchedBySourceSuite extends MergeIntoSuiteBase {
     targetData = Seq((0, 0), (1, 10), (3, 30)).toDF("key", "value"),
     sourceData = Seq((1, 1, "extra3"), (2, 2, "extra2")).toDF("key", "value", "extra"),
     clauses = updateNotMatched("extra = s.extra") :: Nil,
-    expectErrorContains = "cannot resolve extra in UPDATE clause",
-    expectErrorWithoutEvolutionContains = "cannot resolve extra in UPDATE clause")
+    expectErrorContains = "cannot resolve extra in MERGE command",
+    expectErrorWithoutEvolutionContains = "cannot resolve extra in MERGE command")
 
 }

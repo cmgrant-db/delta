@@ -284,7 +284,8 @@ class DeltaCDCSQLSuite extends DeltaCDCSuiteBase with DeltaColumnMappingTestUtil
         sql(s"SELECT * FROM table_changes('$tbl', 0, id)")
       }
       assert(e.getErrorClass == "UNRESOLVED_COLUMN.WITHOUT_SUGGESTION")
-      assert(e.getMessage.contains("Column 'id' does not exist"))
+      assert(e.getMessage.contains(
+        "A column or function parameter with name `id` cannot be resolved"))
     }
   }
 

@@ -238,7 +238,7 @@ class MergeIntoScalaSuite extends MergeIntoSuiteBase  with MergeIntoNotMatchedBy
           .whenNotMatched().insertExpr(Map("trgKey" -> "srcKey", "trgValue" -> "srcValue"))
           .execute()
       }
-      errorContains(e.getMessage, "cannot resolve `*` in UPDATE clause")
+      errorContains(e.getMessage, "cannot resolve `*` in MERGE command")
 
       e = intercept[AnalysisException] {
         io.delta.tables.DeltaTable.forPath(spark, tempPath)
@@ -247,7 +247,7 @@ class MergeIntoScalaSuite extends MergeIntoSuiteBase  with MergeIntoNotMatchedBy
           .whenNotMatched().insertExpr(Map("*" -> "*"))
           .execute()
       }
-      errorContains(e.getMessage, "cannot resolve `*` in INSERT clause")
+      errorContains(e.getMessage, "cannot resolve `*` in MERGE command")
 
       e = intercept[AnalysisException] {
         io.delta.tables.DeltaTable.forPath(spark, tempPath)
@@ -255,7 +255,7 @@ class MergeIntoScalaSuite extends MergeIntoSuiteBase  with MergeIntoNotMatchedBy
           .whenNotMatchedBySource().updateExpr(Map("*" -> "*"))
           .execute()
       }
-      errorContains(e.getMessage, "cannot resolve `*` in UPDATE clause")
+      errorContains(e.getMessage, "cannot resolve `*` in MERGE command")
     }
   }
 

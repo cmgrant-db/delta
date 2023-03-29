@@ -228,7 +228,7 @@ trait OpenSourceDataFrameWriterV2Tests
         .writeTo("table_name").overwritePartitions()
     }
 
-    assert(e.getMessage.contains("Cannot find d in table columns: id, data"))
+    assert(e.getMessage.contains("schema mismatch"))
 
     checkAnswer(
       spark.table("table_name"),

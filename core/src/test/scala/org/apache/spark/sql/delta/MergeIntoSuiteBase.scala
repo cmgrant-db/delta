@@ -4659,8 +4659,8 @@ abstract class MergeIntoSuiteBase
     update(condition = "s.key == 3", set = "key = s.key, value = 2 * srcValue"),
     insert(condition = null, values = "(key, value) VALUES (s.key, srcValue)"),
     insert(condition = null, values = "(key, value) VALUES (s.key, 1 + srcValue)"))(
-    errorStrs = "when there are more than one not matched [by target] clauses in a merge " +
-      "statement, only the last not matched [by target] clause can omit the condition" :: Nil)
+    errorStrs = "when there are more than one not matched clauses in a merge " +
+      "statement, only the last not matched clause can omit the condition" :: Nil)
 
   testAnalysisErrorsInUnlimitedClauses("error on multiple update clauses without condition")(
     mergeOn = "s.key = t.key",
@@ -4695,8 +4695,8 @@ abstract class MergeIntoSuiteBase
     update(condition = null, set = "key = s.key, value = srcValue"),
     insert(condition = null, values = "(key, value) VALUES (s.key, srcValue)"),
     insert(condition = "s.key < 3", values = "(key, value) VALUES (s.key, 1 + srcValue)"))(
-    errorStrs = "when there are more than one not matched [by target] clauses in a merge " +
-      "statement, only the last not matched [by target] clause can omit the condition" :: Nil)
+    errorStrs = "when there are more than one not matched clauses in a merge " +
+      "statement, only the last not matched clause can omit the condition" :: Nil)
 
   /* end unlimited number of merge clauses tests */
 
