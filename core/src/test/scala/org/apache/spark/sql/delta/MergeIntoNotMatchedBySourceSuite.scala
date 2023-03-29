@@ -132,12 +132,12 @@ trait MergeIntoNotMatchedBySourceSuite extends MergeIntoSuiteBase {
     mergeOn = "s.key = t.key",
     deleteNotMatched(condition = "unknownAttrib > 1"))(
     // Should show unknownAttrib as invalid ref and (key, tgtValue, srcValue) as valid column names.
-    errorStrs = "DELETE condition" :: "unknownAttrib" :: "key" :: "tgtValue" :: Nil)
+    errorStrs = "MERGE command" :: "unknownAttrib" :: "key" :: "tgtValue" :: Nil)
 
   testAnalysisErrorsInExtendedMerge("delete not matched condition - aggregation function")(
     mergeOn = "s.key = t.key",
     deleteNotMatched(condition = "max(0) > 0"))(
-    errorStrs = "merge command" :: "aggregate functions are not supported" :: Nil)
+    errorStrs = "DELETE condition" :: "aggregate functions are not supported" :: Nil)
 
   testAnalysisErrorsInExtendedMerge("delete not matched condition - subquery")(
     mergeOn = "s.key = t.key",
