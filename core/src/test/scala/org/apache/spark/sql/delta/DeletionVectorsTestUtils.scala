@@ -27,11 +27,18 @@ import org.apache.spark.sql.delta.storage.dv.DeletionVectorStore
 import org.apache.spark.sql.delta.util.PathWithFileSystem
 import org.apache.hadoop.fs.Path
 
-import org.apache.spark.sql.{DataFrame, QueryTest}
+import org.apache.spark.sql.{DataFrame, QueryTest, SparkSession}
 import org.apache.spark.sql.test.SharedSparkSession
 
 /** Collection of test utilities related with persistent Deletion Vectors. */
 trait DeletionVectorsTestUtils extends QueryTest with SharedSparkSession {
+
+  def enableDeletionVectorsForDeletes(spark: SparkSession, enabled: Boolean = true): Unit = {
+    val enabledStr = enabled.toString
+    spark.conf
+      .set(DeltaConfigs.ENABLE_DELETION_VECTORS_CREATION.defaultTablePropertyKey, enabledStr)
+    spark.conf.set(DeltaSQLConf.DELETE_USE_PERSISTENT_DELETION_VECTORS.key, enabledStr)
+  }
 
   def testWithDVs(testName: String, testTags: org.scalatest.Tag*)(thunk: => Unit): Unit = {
     test(testName, testTags : _*) {
@@ -67,9 +74,11 @@ trait DeletionVectorsTestUtils extends QueryTest with SharedSparkSession {
           .format("delta")
           .save(tablePath.toString)
       }
-      // Use a function instead of a value, because DeltaTable hangs on to the first snapshot it
-      // resolved for the underlying dataframe, which generally isn't the desired behaviour in
-      // tests.
+      // DeltaTable hangs on to the DataFrame it is created with for the entire object lifetime.
+      // That means subsequent `targetTable.toDF` calls will return the same snapshot.
+      // The DV tests are generally written assuming `targetTable.toDF` would return a new snapshot.
+      // So create a function here instead of a n instance, so `targetTable().toDF`
+      // will actually provide a new snapshot.
       val targetTable =
         () => io.delta.tables.DeltaTable.forPath(tablePath.toString)
       val targetLog = DeltaLog.forTable(spark, tablePath)

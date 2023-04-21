@@ -101,7 +101,8 @@ trait DocsPath {
     "icebergClassMissing",
     "tableFeatureReadRequiresWriteException",
     "tableFeatureRequiresHigherReaderProtocolVersion",
-    "tableFeatureRequiresHigherWriterProtocolVersion"
+    "tableFeatureRequiresHigherWriterProtocolVersion",
+    "blockStreamingReadsWithIncompatibleColumnMappingSchemaChanges"
   )
 }
 
@@ -1720,20 +1721,6 @@ trait DeltaErrorsBase
     )
   }
 
-  def schemaContainsTimestampNTZType(
-      schema: StructType,
-      requiredProtocol: Protocol,
-      currentProtocol: Protocol): Throwable = {
-    new DeltaAnalysisException(
-      errorClass = "DELTA_UNSUPPORTED_TYPE_TIMESTAMP_NTZ",
-      messageParameters = Array(
-        s"${formatSchema(schema)}",
-        s"$requiredProtocol",
-        s"$currentProtocol"
-      )
-    )
-  }
-
   def tableAlreadyExists(table: CatalogTable): Throwable = {
     new DeltaAnalysisException(
       errorClass = "DELTA_TABLE_ALREADY_EXISTS",
@@ -2175,6 +2162,16 @@ trait DeltaErrorsBase
       messageParameters = Array(features.mkString(", ")))
   }
 
+  def tableFeaturesRequireManualEnablementException(
+      unsupportedFeatures: Iterable[TableFeature],
+      supportedFeatures: Iterable[TableFeature]): Throwable = {
+    new DeltaTableFeatureException(
+      errorClass = "DELTA_FEATURES_REQUIRE_MANUAL_ENABLEMENT",
+      messageParameters = Array(
+        unsupportedFeatures.map(_.name).toSeq.sorted.mkString(", "),
+        supportedFeatures.map(_.name).toSeq.sorted.mkString(", ")))
+  }
+
   def concurrentAppendException(
       conflictingCommit: Option[CommitInfo],
       partition: String,
@@ -2556,16 +2553,19 @@ trait DeltaErrorsBase
     )
   }
 
-  def blockStreamingReadsOnColumnMappingEnabledTable(
+  def blockStreamingReadsWithIncompatibleColumnMappingSchemaChanges(
+      spark: SparkSession,
       readSchema: StructType,
       incompatibleSchema: StructType,
-      isCdfRead: Boolean,
       detectedDuringStreaming: Boolean): Throwable = {
-    new DeltaColumnMappingUnsupportedSchemaIncompatibleException(
-      if (isCdfRead) "Streaming read of Change Data Feed (CDF)" else "Streaming read",
+    val docLink = "/versioning.html#column-mapping"
+    val enableNonAdditiveSchemaEvolution = spark.sessionState.conf.getConf(
+      DeltaSQLConf.DELTA_STREAMING_ENABLE_NON_ADDITIVE_SCHEMA_EVOLUTION)
+    new DeltaStreamingColumnMappingSchemaIncompatibleException(
       readSchema,
       incompatibleSchema,
-      DeltaSQLConf.DELTA_STREAMING_UNSAFE_READ_ON_INCOMPATIBLE_COLUMN_MAPPING_SCHEMA_CHANGES.key,
+      generateDocsLink(spark.sparkContext.getConf, docLink),
+      enableNonAdditiveSchemaEvolution,
       additionalProperties = Map(
         "detectedDuringStreaming" -> detectedDuringStreaming.toString
       ))
@@ -2574,9 +2574,9 @@ trait DeltaErrorsBase
   def failedToGetSnapshotDuringColumnMappingStreamingReadCheck(cause: Throwable): Throwable = {
     new DeltaAnalysisException(
       errorClass = "DELTA_STREAMING_CHECK_COLUMN_MAPPING_NO_SNAPSHOT",
-      Array(DeltaSQLConf
+      messageParameters = Array(DeltaSQLConf
         .DELTA_STREAMING_UNSAFE_READ_ON_INCOMPATIBLE_COLUMN_MAPPING_SCHEMA_CHANGES.key),
-      Some(cause))
+      cause = Some(cause))
   }
 
   def showColumnsWithConflictDatabasesError(db: String, tableID: TableIdentifier): Throwable = {
@@ -2637,6 +2637,24 @@ trait DeltaErrorsBase
         generateDocsLink(
           sparkConf, "/delta-utility.html#convert-a-parquet-table-to-a-delta-table")),
       cause = cause)
+  }
+
+  def streamingSchemaEvolutionException(newSchema: StructType): Throwable = {
+    new DeltaRuntimeException(
+      errorClass = "DELTA_STREAMING_SCHEMA_EVOLUTION",
+      messageParameters = Array(formatSchema(newSchema)))
+  }
+
+  def streamingSchemaLogInitFailedIncompatibleSchemaException(
+      startVersion: Long,
+      endVersion: Long): Throwable = {
+    new DeltaRuntimeException(
+      errorClass = "DELTA_STREAMING_SCHEMA_LOG_INIT_FAILED_INCOMPATIBLE_SCHEMA",
+      messageParameters = Array(
+        startVersion.toString, endVersion.toString,
+        DeltaSQLConf.
+          DELTA_STREAMING_UNSAFE_READ_ON_INCOMPATIBLE_SCHEMA_CHANGES_DURING_STREAM_START.key)
+    )
   }
 
   def failToDeserializeSchemaLog(location: String): Throwable = {
@@ -3050,7 +3068,7 @@ class DeltaTablePropertyValidationFailedException(
     table: String,
     subClass: DeltaTablePropertyValidationFailedSubClass)
   extends RuntimeException(DeltaThrowableHelper.getMessage(
-    errorClass = "DELTA_VIOLATE_TABLE_PROPERTY_VALIDATION_FAILED",
+    errorClass = "DELTA_VIOLATE_TABLE_PROPERTY_VALIDATION_FAILED" + "." + subClass.tag,
     messageParameters = subClass.messageParameters(table)))
     with DeltaThrowable {
   override def getErrorClass: String =
@@ -3080,18 +3098,20 @@ class DeltaChecksumException(
  * To make compatible with existing behavior for those who accidentally has already used this
  * operation, user should always be able to use `escapeConfigName` to fall back at own risk.
  */
-class DeltaColumnMappingUnsupportedSchemaIncompatibleException(
-    val opName: String,
+class DeltaStreamingColumnMappingSchemaIncompatibleException(
     val readSchema: StructType,
     val incompatibleSchema: StructType,
-    val escapeConfigName: String,
+    val docLink: String,
+    val enableNonAdditiveSchemaEvolution: Boolean = false,
     val additionalProperties: Map[String, String] = Map.empty)
   extends DeltaUnsupportedOperationException(
-    errorClass = "DELTA_BLOCK_COLUMN_MAPPING_SCHEMA_INCOMPATIBLE_OPERATION",
+    errorClass = if (enableNonAdditiveSchemaEvolution) {
+      "DELTA_STREAMING_INCOMPATIBLE_SCHEMA_CHANGE_USE_SCHEMA_LOG"
+    } else {
+      "DELTA_STREAMING_INCOMPATIBLE_SCHEMA_CHANGE"
+    },
     messageParameters = Array(
-      opName,
+      docLink,
       readSchema.json,
-      incompatibleSchema.json,
-      opName,
-      escapeConfigName)
+      incompatibleSchema.json)
   )

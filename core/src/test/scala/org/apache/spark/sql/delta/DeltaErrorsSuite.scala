@@ -97,7 +97,13 @@ trait DeltaErrorsSuiteBase
       DeltaErrors.tableFeatureRequiresHigherReaderProtocolVersion(
         feature = "feature",
         currentVersion = 1,
-        requiredVersion = 7)
+        requiredVersion = 7),
+    "blockStreamingReadsWithIncompatibleColumnMappingSchemaChanges" ->
+      DeltaErrors.blockStreamingReadsWithIncompatibleColumnMappingSchemaChanges(
+        spark,
+        StructType.fromDDL("id int"),
+        StructType.fromDDL("id2 int"),
+        detectedDuringStreaming = true)
   )
 
   def otherMessagesToTest: Map[String, String] = Map(
@@ -152,7 +158,7 @@ trait DeltaErrorsSuiteBase
     testUrls()
   }
 
-  test("test DeltaErrors methods") {
+  test("test DeltaErrors methods -- part 1") {
     {
       val e = intercept[DeltaIllegalStateException] {
         throw DeltaErrors.tableAlreadyContainsCDCColumns(Seq("col1", "col2"))
@@ -1501,6 +1507,9 @@ trait DeltaErrorsSuiteBase
       assert(e.getMessage == "Creating a bloom filter index on a column with type date is " +
         "unsupported: col1")
     }
+  }
+
+  test("test DeltaErrors methods -- part 2") {
     {
       val e = intercept[DeltaAnalysisException] {
         throw DeltaErrors.unsupportedDataTypes(
@@ -2682,39 +2691,33 @@ trait DeltaErrorsSuiteBase
       assert(e.getMessage == s"Can't set location multiple times. Found ${locations}")
     }
     {
-      val e = intercept[DeltaColumnMappingUnsupportedSchemaIncompatibleException] {
-        throw DeltaErrors.blockStreamingReadsOnColumnMappingEnabledTable(
+      val e = intercept[DeltaStreamingColumnMappingSchemaIncompatibleException] {
+        throw DeltaErrors.blockStreamingReadsWithIncompatibleColumnMappingSchemaChanges(
+          spark,
           StructType.fromDDL("id int"),
           StructType.fromDDL("id2 int"),
-          isCdfRead = true,
           detectedDuringStreaming = true
         )
       }
-      assert(e.getErrorClass == "DELTA_BLOCK_COLUMN_MAPPING_SCHEMA_INCOMPATIBLE_OPERATION")
+      assert(e.getErrorClass == "DELTA_STREAMING_INCOMPATIBLE_SCHEMA_CHANGE")
       assert(e.getSqlState == "42KD4")
-      assert(e.opName == "Streaming read of Change Data Feed (CDF)")
       assert(e.readSchema == StructType.fromDDL("id int"))
       assert(e.incompatibleSchema == StructType.fromDDL("id2 int"))
-      assert(e.escapeConfigName ==
-        DeltaSQLConf.DELTA_STREAMING_UNSAFE_READ_ON_INCOMPATIBLE_COLUMN_MAPPING_SCHEMA_CHANGES.key)
       assert(e.additionalProperties("detectedDuringStreaming").toBoolean)
     }
     {
-      val e = intercept[DeltaColumnMappingUnsupportedSchemaIncompatibleException] {
-        throw DeltaErrors.blockStreamingReadsOnColumnMappingEnabledTable(
+      val e = intercept[DeltaStreamingColumnMappingSchemaIncompatibleException] {
+        throw DeltaErrors.blockStreamingReadsWithIncompatibleColumnMappingSchemaChanges(
+          spark,
           StructType.fromDDL("id int"),
           StructType.fromDDL("id2 int"),
-          isCdfRead = false,
           detectedDuringStreaming = false
         )
       }
-      assert(e.getErrorClass == "DELTA_BLOCK_COLUMN_MAPPING_SCHEMA_INCOMPATIBLE_OPERATION")
+      assert(e.getErrorClass == "DELTA_STREAMING_INCOMPATIBLE_SCHEMA_CHANGE")
       assert(e.getSqlState == "42KD4")
-      assert(e.opName == "Streaming read")
       assert(e.readSchema == StructType.fromDDL("id int"))
       assert(e.incompatibleSchema == StructType.fromDDL("id2 int"))
-      assert(e.escapeConfigName ==
-        DeltaSQLConf.DELTA_STREAMING_UNSAFE_READ_ON_INCOMPATIBLE_COLUMN_MAPPING_SCHEMA_CHANGES.key)
       assert(!e.additionalProperties("detectedDuringStreaming").toBoolean)
     }
     {

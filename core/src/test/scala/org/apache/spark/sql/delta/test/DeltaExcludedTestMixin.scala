@@ -14,22 +14,25 @@
  * limitations under the License.
  */
 
-package org.apache.spark.sql.delta
+package org.apache.spark.sql.delta.test
 
-import org.apache.spark.sql.delta.hooks.GenerateSymlinkManifest
-import org.apache.spark.sql.delta.test.DeltaHiveTest
+import org.apache.spark.sql.QueryTest
 
-import org.apache.spark.sql.AnalysisException
-import org.apache.spark.sql.hive.test.TestHiveSingleton
+import org.scalactic.source.Position
+import org.scalatest.Tag
 
-abstract class HiveDeltaDDLSuiteBase
-  extends DeltaDDLTestBase {
-  import testImplicits._
+trait DeltaExcludedTestMixin extends QueryTest {
 
-  override protected def verifyNullabilityFailure(exception: AnalysisException): Unit = {
-    exception.getMessage.contains("not supported for changing column")
+  /** Tests to be ignored by the runner. */
+  def excluded: Seq[String] = Seq.empty
+
+  protected override def test(testName: String, testTags: Tag*)
+    (testFun: => Any)
+    (implicit pos: Position): Unit = {
+    if (excluded.contains(testName)) {
+      super.ignore(testName, testTags: _*)(testFun)
+    } else {
+      super.test(testName, testTags: _*)(testFun)
+    }
   }
-
 }
-
-class HiveDeltaDDLSuite extends HiveDeltaDDLSuiteBase with DeltaHiveTest
