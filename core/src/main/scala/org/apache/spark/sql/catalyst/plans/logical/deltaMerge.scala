@@ -633,10 +633,12 @@ object DeltaMergeInto {
     if (resolvedMerge.missingInput.nonEmpty) {
       val missingAttributes = resolvedMerge.missingInput.mkString(",")
       val input = resolvedMerge.inputSet.mkString(",")
-      val msgForMissingAttributes = s"Resolved attribute(s) $missingAttributes missing " +
-        s"from $input in operator ${resolvedMerge.simpleString(SQLConf.get.maxToStringFields)}."
-      // todo: either use a delta error or find a better error class
-      resolvedMerge.failAnalysis("INTERNAL_ERROR", Map("message" -> msgForMissingAttributes))
+      throw new DeltaAnalysisException(
+        errorClass = "DELTA_MERGE_RESOLVED_ATTRIBUTE_MISSING_FROM_INPUT",
+        messageParameters = Array(missingAttributes, input,
+          resolvedMerge.simpleString(SQLConf.get.maxToStringFields)),
+        origin = Some(resolvedMerge.origin)
+      )
     }
 
     resolvedMerge

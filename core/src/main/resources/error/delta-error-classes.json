@@ -1023,6 +1023,11 @@
     ],
     "sqlState" : "42601"
   },
+  "DELTA_MERGE_RESOLVED_ATTRIBUTE_MISSING_FROM_INPUT" : {
+    "message" : [
+      "Resolved attribute(s) <missingAttributes> missing from <input> in operator <merge>"
+    ]
+  },
   "DELTA_MERGE_UNEXPECTED_ASSIGNMENT_KEY" : {
     "message" : [
       "Unexpected assignment key: <unexpectedKeyClass> - <unexpectedKeyObject>"

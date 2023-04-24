@@ -16,8 +16,8 @@
 
 package org.apache.spark.sql.delta
 
-import java.util.concurrent.atomic.AtomicInteger
 import java.util.Locale
+import java.util.concurrent.atomic.AtomicInteger
 
 import org.apache.spark.sql.delta.DeltaTestUtils.Plans
 import org.apache.spark.sql.delta.test.DeltaSQLCommandTest

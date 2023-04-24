@@ -64,11 +64,11 @@ class DeltaUnsupportedOperationException(
 //   Instead of passing just a message here, we could enforce creating an errorClass for each
 //   invocation and make this DeltaParseException(errorClass, ctx)
 class DeltaParseException(
-  message: String,
-  ctx: ParserRuleContext)
+    message: String,
+    ctx: ParserRuleContext)
   extends ParseException(
-    Option(ParserUtils.command(ctx)),
-    message,
-    ParserUtils.position(ctx.getStart),
-    ParserUtils.position(ctx.getStop)
-  ) with DeltaThrowable
+      Option(ParserUtils.command(ctx)),
+      message,
+      ParserUtils.position(ctx.getStart),
+      ParserUtils.position(ctx.getStop)
+    ) with DeltaThrowable

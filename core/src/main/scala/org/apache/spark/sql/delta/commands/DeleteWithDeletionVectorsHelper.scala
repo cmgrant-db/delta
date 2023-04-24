@@ -21,7 +21,7 @@ import java.util.UUID
 import scala.collection.generic.Sizing
 
 import org.apache.spark.sql.catalyst.expressions.aggregation.BitmapAggregator
-import org.apache.spark.sql.delta.{DeltaLog, DeltaParquetFileFormat, OptimisticTransaction, Snapshot}
+import org.apache.spark.sql.delta.{DeltaLog, DeltaParquetFileFormat, DeltaUDF, OptimisticTransaction, Snapshot}
 import org.apache.spark.sql.delta.DeltaParquetFileFormat._
 import org.apache.spark.sql.delta.actions.{AddFile, DeletionVectorDescriptor, FileAction}
 import org.apache.spark.sql.delta.deletionvectors.{RoaringBitmapArray, RoaringBitmapArrayFormat, StoredBitmap}
@@ -294,8 +294,11 @@ object DeletionVectorBitmapGenerator {
       candidateFiles: Seq[AddFile],
       condition: Expression)
     : Seq[DeletionVectorResult] = {
+    val uriEncode = DeltaUDF.stringFromString(path => {
+      new Path(path).toUri.toString
+    })
     val matchedRowsDf = targetDf
-      .withColumn(FILE_NAME_COL, col(s"${METADATA_NAME}.${FILE_PATH}"))
+      .withColumn(FILE_NAME_COL, uriEncode(col(s"${METADATA_NAME}.${FILE_PATH}")))
       // Filter after getting input file name as the filter might introduce a join and we
       // cannot get input file name on join's output.
       .filter(new Column(condition))
