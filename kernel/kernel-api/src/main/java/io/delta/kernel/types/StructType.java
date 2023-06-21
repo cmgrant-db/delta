@@ -96,6 +96,10 @@ public final class StructType extends DataType {
         return fields.size();
     }
 
+    /**
+     * @param fieldName name of the field to find the index for
+     * @return index of field with name {@code fieldName} or -1 if it does not exist
+     */
     public int indexOf(String fieldName) {
         return fieldNames.indexOf(fieldName);
     }

@@ -101,6 +101,8 @@ class ParquetConverters
          * @return True if the last converted value is null, false otherwise
          */
         boolean moveToNextRow();
+
+        // void resetBatch();
     }
 
     public static class RowRecordGroupConverter

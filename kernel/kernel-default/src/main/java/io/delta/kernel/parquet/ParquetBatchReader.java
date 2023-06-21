@@ -18,6 +18,7 @@ package io.delta.kernel.parquet;
 
 import java.io.IOException;
 import java.util.Map;
+import java.util.Optional;
 import static java.util.Objects.requireNonNull;
 
 import org.apache.hadoop.conf.Configuration;
@@ -34,8 +35,12 @@ import org.apache.parquet.io.api.RecordMaterializer;
 import org.apache.parquet.schema.MessageType;
 
 import io.delta.kernel.DefaultKernelUtils;
+import io.delta.kernel.data.ColumnVector;
 import io.delta.kernel.data.ColumnarBatch;
+import io.delta.kernel.data.DefaultColumnarBatch;
+import io.delta.kernel.data.vector.DefaultLongVector;
 import io.delta.kernel.parquet.ParquetConverters.RowRecordGroupConverter;
+import io.delta.kernel.types.StructField;
 import io.delta.kernel.types.StructType;
 import io.delta.kernel.utils.CloseableIterator;
 
@@ -52,6 +57,12 @@ public class ParquetBatchReader
 
     public CloseableIterator<ColumnarBatch> read(String path, StructType schema)
     {
+        // TODO: decide how we want to do this
+        int rowIndexColIdx = schema.indexOf(StructField.ROW_INDEX_COLUMN_NAME);
+        if (rowIndexColIdx >= 0 && !schema.at(rowIndexColIdx).isMetadataColumn()) {
+            rowIndexColIdx = -1;
+        }
+
         BatchReadSupport batchReadSupport = new BatchReadSupport(maxBatchSize, schema);
         ParquetRecordReader<Object> reader = new ParquetRecordReader<>(batchReadSupport);
 
@@ -69,8 +80,11 @@ public class ParquetBatchReader
             throw new RuntimeException(e);
         }
 
+        int finalRowIndexColIdx = rowIndexColIdx;
         return new CloseableIterator<ColumnarBatch>()
         {
+            private ColumnarBatch nextBatch = null;
+
             @Override
             public void close()
                     throws IOException
@@ -82,26 +96,60 @@ public class ParquetBatchReader
             public boolean hasNext()
             {
                 try {
-                    return reader.nextKeyValue();
+                    tryLoadNextBatch();
+                    return nextBatch != null;
                 }
                 catch (IOException | InterruptedException e) {
                     throw new RuntimeException(e);
                 }
             }
+            // need to protect hasNext() from being called over and over w/out writing row_index
 
+            // TODO: cannot change batch size. This doesn't reset the data returned?
+            //  resizeIfNeeded??
+
+            // either add resetBatch() or getDataAsColumnarBatch only return last batchSize rows
             @Override
             public ColumnarBatch next()
             {
+                // how does this not just load the same batch over and over?
+                ColumnarBatch result = nextBatch;
+                nextBatch = null;
+                return result;
+            }
+
+            // try to load next batch if not loaded
+            private void tryLoadNextBatch() throws IOException, InterruptedException {
+                if (nextBatch != null) return;
+
+                // TODO: reset batchReadSupport here
+
+                long[] rowIndices = new long[maxBatchSize];
                 int batchSize = 0;
-                do {
-                    // hasNext reads to row to confirm there is a next element.
+                while (batchSize < maxBatchSize && reader.nextKeyValue()) {
+                    rowIndices[batchSize] = reader.getCurrentRowIndex();
                     batchReadSupport.moveToNextRow();
                     batchSize++;
-                }
-                while (batchSize < maxBatchSize && hasNext());
+                    // add a way to pass the last read value & save it somewhere instead??
+                    // either in RowRecordCollector or RowRecordGroupConverter? (I think 2nd better)
+                };
 
-                return batchReadSupport.getDataAsColumnarBatch(batchSize);
+                if (batchSize != 0) { // we read at least 1 row
+                    ColumnarBatch dataBatch = batchReadSupport.getDataAsColumnarBatch(batchSize);
+                    ColumnVector[] cols = new ColumnVector[schema.length()];
+                    for (int i = 0; i < schema.length(); i++) {
+                        if (i == finalRowIndexColIdx) {
+                            cols[i] = new DefaultLongVector(
+                                    batchSize, Optional.empty(), rowIndices);
+                        } else {
+                            cols[i] = dataBatch.getColumnVector(i);
+                        }
+                    }
+                    nextBatch = new DefaultColumnarBatch(batchSize, schema, cols);
+                }
             }
+
+
         };
     }
 

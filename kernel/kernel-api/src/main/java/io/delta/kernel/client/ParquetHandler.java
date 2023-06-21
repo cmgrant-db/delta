@@ -35,6 +35,8 @@ public interface ParquetHandler
      * Read the Parquet format files at the given locations and return the data as a
      * {@link ColumnarBatch} with the columns requested by {@code physicalSchema}.
      *
+     * TODO: add note that the ROW_INDEX column must be populated (and point to the StructField.**)
+     *
      * @param fileIter Iterator of {@link FileReadContext} objects to read data from.
      * @param physicalSchema Select list of columns to read from the Parquet file.
      * @return an iterator of {@link FileDataReadResult}s containing the data in columnar format
