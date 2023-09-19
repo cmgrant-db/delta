@@ -22,7 +22,7 @@ import java.{util => ju}
 import scala.collection.JavaConverters._
 import scala.collection.mutable
 
-import org.apache.spark.sql.delta.{ColumnWithDefaultExprUtils, DeltaColumnMapping, DeltaErrors, DeltaLog, DeltaOptions, DeltaTableIdentifier, DeltaTableUtils, DeltaTimeTravelSpec, Snapshot}
+import org.apache.spark.sql.delta.{ColumnWithDefaultExprUtils, DeltaColumnMapping, DeltaErrors, DeltaLog, DeltaOptions, DeltaTableIdentifier, DeltaTableUtils, DeltaTimeTravelSpec, GeneratedColumn, Snapshot}
 import org.apache.spark.sql.delta.commands.WriteIntoDelta
 import org.apache.spark.sql.delta.commands.cdc.CDCReader
 import org.apache.spark.sql.delta.metering.DeltaLogging
@@ -56,8 +56,7 @@ case class DeltaTableV2(
     catalogTable: Option[CatalogTable] = None,
     tableIdentifier: Option[String] = None,
     timeTravelOpt: Option[DeltaTimeTravelSpec] = None,
-    options: Map[String, String] = Map.empty,
-    cdcOptions: CaseInsensitiveStringMap = CaseInsensitiveStringMap.empty())
+    options: Map[String, String] = Map.empty)
   extends Table
   with SupportsWrite
   with V2TableWithV1Fallback
@@ -72,6 +71,8 @@ case class DeltaTableV2(
     }
   }
 
+
+  def hasPartitionFilters: Boolean = partitionFilters.nonEmpty
 
   // This MUST be initialized before the deltaLog object is created, in order to accurately
   // bound the creation time of the table.
@@ -100,10 +101,12 @@ case class DeltaTableV2(
     timeTravelOpt.orElse(timeTravelByPath)
   }
 
+  private lazy val caseInsensitiveOptions = new CaseInsensitiveStringMap(options.asJava)
+
   lazy val snapshot: Snapshot = {
     timeTravelSpec.map { spec =>
       // By default, block using CDF + time-travel
-      if (CDCReader.isCDCRead(cdcOptions) &&
+      if (CDCReader.isCDCRead(caseInsensitiveOptions) &&
           !spark.sessionState.conf.getConf(DeltaSQLConf.DELTA_CDF_ALLOW_TIME_TRAVEL_OPTIONS)) {
         throw DeltaErrors.timeTravelNotSupportedException
       }
@@ -126,9 +129,25 @@ case class DeltaTableV2(
     )
   }
 
-  private lazy val tableSchema: StructType =
-    DeltaColumnMapping.dropColumnMappingMetadata(
-      DeltaTableUtils.removeInternalMetadata(spark, snapshot.schema))
+  // We get the cdcRelation ahead of time if this is a CDC read to be able to return the correct
+  // schema. The schema for CDC reads are currently convoluted due to column mapping behavior
+  private lazy val cdcRelation: Option[BaseRelation] = {
+    if (CDCReader.isCDCRead(caseInsensitiveOptions)) {
+      recordDeltaEvent(deltaLog, "delta.cdf.read",
+        data = caseInsensitiveOptions.asCaseSensitiveMap())
+      Some(CDCReader.getCDCRelation(
+        spark, snapshot, timeTravelSpec.nonEmpty, spark.sessionState.conf, caseInsensitiveOptions))
+    } else {
+      None
+    }
+  }
+
+  private lazy val tableSchema: StructType = {
+    val baseSchema = cdcRelation.map(_.schema).getOrElse {
+      DeltaTableUtils.removeInternalMetadata(spark, snapshot.schema)
+    }
+    DeltaColumnMapping.dropColumnMappingMetadata(baseSchema)
+  }
 
   override def schema(): StructType = tableSchema
 
@@ -166,7 +185,8 @@ case class DeltaTableV2(
 
 
   override def newWriteBuilder(info: LogicalWriteInfo): WriteBuilder = {
-    new WriteIntoDeltaBuilder(deltaLog, info.options)
+    new WriteIntoDeltaBuilder(
+      deltaLog, info.options, spark.sessionState.conf.useNullsForMissingDefaultColumnValues)
   }
 
   /**
@@ -190,44 +210,47 @@ case class DeltaTableV2(
     val partitionPredicates = DeltaDataSource.verifyAndCreatePartitionFilters(
       path.toString, snapshot, partitionFilters)
 
-    deltaLog.createRelation(
-      partitionPredicates, Some(snapshot), timeTravelSpec.isDefined, cdcOptions)
+    cdcRelation.getOrElse {
+      deltaLog.createRelation(
+        partitionPredicates, Some(snapshot), timeTravelSpec.isDefined)
+    }
   }
 
   /**
    * Check the passed in options and existing timeTravelOpt, set new time travel by options.
    */
-  def withOptions(options: Map[String, String]): DeltaTableV2 = {
-    val ttSpec = DeltaDataSource.getTimeTravelVersion(options)
+  def withOptions(newOptions: Map[String, String]): DeltaTableV2 = {
+    val ttSpec = DeltaDataSource.getTimeTravelVersion(newOptions)
     if (timeTravelOpt.nonEmpty && ttSpec.nonEmpty) {
       throw DeltaErrors.multipleTimeTravelSyntaxUsed
     }
 
-    def checkCDCOptionsValidity(options: CaseInsensitiveStringMap): Unit = {
-      // check if we have both version and timestamp parameters
-      if (options.containsKey(DeltaDataSource.CDC_START_TIMESTAMP_KEY)
-          && options.containsKey(DeltaDataSource.CDC_START_VERSION_KEY)) {
-        throw DeltaErrors.multipleCDCBoundaryException("starting")
-      }
-      if (options.containsKey(DeltaDataSource.CDC_END_VERSION_KEY)
-          && options.containsKey(DeltaDataSource.CDC_END_TIMESTAMP_KEY)) {
-        throw DeltaErrors.multipleCDCBoundaryException("ending")
-      }
-      if (!options.containsKey(DeltaDataSource.CDC_START_VERSION_KEY)
-          && !options.containsKey(DeltaDataSource.CDC_START_TIMESTAMP_KEY)) {
-        throw DeltaErrors.noStartVersionForCDC()
-      }
-    }
-
-    val caseInsensitiveStringMap = new CaseInsensitiveStringMap(options.asJava)
+    val caseInsensitiveNewOptions = new CaseInsensitiveStringMap(newOptions.asJava)
 
     if (timeTravelOpt.isEmpty && ttSpec.nonEmpty) {
       copy(timeTravelOpt = ttSpec)
-    } else if (CDCReader.isCDCRead(caseInsensitiveStringMap)) {
-      checkCDCOptionsValidity(caseInsensitiveStringMap)
-      copy(cdcOptions = caseInsensitiveStringMap)
+    } else if (CDCReader.isCDCRead(caseInsensitiveNewOptions)) {
+      checkCDCOptionsValidity(caseInsensitiveNewOptions)
+      // Do not use statistics during CDF reads
+      this.copy(catalogTable = catalogTable.map(_.copy(stats = None)), options = newOptions)
     } else {
       this
+    }
+  }
+
+  private def checkCDCOptionsValidity(options: CaseInsensitiveStringMap): Unit = {
+    // check if we have both version and timestamp parameters
+    if (options.containsKey(DeltaDataSource.CDC_START_TIMESTAMP_KEY)
+      && options.containsKey(DeltaDataSource.CDC_START_VERSION_KEY)) {
+      throw DeltaErrors.multipleCDCBoundaryException("starting")
+    }
+    if (options.containsKey(DeltaDataSource.CDC_END_VERSION_KEY)
+      && options.containsKey(DeltaDataSource.CDC_END_TIMESTAMP_KEY)) {
+      throw DeltaErrors.multipleCDCBoundaryException("ending")
+    }
+    if (!options.containsKey(DeltaDataSource.CDC_START_VERSION_KEY)
+      && !options.containsKey(DeltaDataSource.CDC_START_TIMESTAMP_KEY)) {
+      throw DeltaErrors.noStartVersionForCDC()
     }
   }
 
@@ -245,7 +268,8 @@ case class DeltaTableV2(
 
 private class WriteIntoDeltaBuilder(
     log: DeltaLog,
-    writeOptions: CaseInsensitiveStringMap)
+    writeOptions: CaseInsensitiveStringMap,
+    nullAsDefault: Boolean)
   extends WriteBuilder with SupportsOverwrite with SupportsTruncate with SupportsDynamicOverwrite {
 
   private var forceOverwrite = false
@@ -280,7 +304,15 @@ private class WriteIntoDeltaBuilder(
       new InsertableRelation {
         override def insert(data: DataFrame, overwrite: Boolean): Unit = {
           val session = data.sparkSession
-
+          // Normal table insertion should be the only place that can use null as the default
+          // column value. We put a special option here so that `TransactionalWrite#writeFiles`
+          // will recognize it and apply null-as-default.
+          if (nullAsDefault) {
+            options.put(
+              ColumnWithDefaultExprUtils.USE_NULL_AS_DEFAULT_DELTA_OPTION,
+              "true"
+            )
+          }
           // TODO: Get the config from WriteIntoDelta's txn.
           WriteIntoDelta(
             log,

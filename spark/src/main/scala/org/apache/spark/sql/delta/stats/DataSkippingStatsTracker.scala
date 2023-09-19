@@ -157,23 +157,6 @@ class DeltaTaskStatisticsTracker(
     submittedFiles.clear()
     DeltaFileStatistics(results.toMap)
   }
-
-  /**
-   * Flattens the struct nested columns and for each column returns its data type and an unique
-   * custom name created by appending the inner field column name to the given `customExprId`
-   * (i.e. an accumulator for so far created custom name, which initially is equal
-   * to the column `exprId`).
-   */
-  def flattenStructCols(field: StructType, customExprId: String): Array[(String, DataType)] = {
-    field.fields.flatMap { f =>
-      f.dataType match {
-        case structField: StructType =>
-          flattenStructCols(structField, customExprId + "." + f.name)
-        case _ =>
-          Array((customExprId + "." + f.name, f.dataType))
-      }
-    }
-  }
 }
 
 /**
@@ -188,7 +171,8 @@ class DeltaJobStatisticsTracker(
     @transient private val hadoopConf: Configuration,
     @transient val path: Path,
     val dataCols: Seq[Attribute],
-    val statsColExpr: Expression) extends WriteJobStatsTracker {
+    val statsColExpr: Expression
+) extends WriteJobStatsTracker {
 
   var recordedStats: Map[String, String] = _
 

@@ -20,7 +20,8 @@ import org.apache.spark.sql.delta.test.{DeltaExcludedTestMixin, DeltaSQLCommandT
 
 import org.apache.spark.sql.Row
 
-class DeleteSQLSuite extends DeleteSuiteBase  with DeltaSQLCommandTest {
+class DeleteSQLSuite extends DeleteSuiteBase
+  with DeltaSQLCommandTest {
 
   import testImplicits._
 
@@ -113,7 +114,10 @@ class DeleteSQLWithDeletionVectorsSuite extends DeleteSQLSuite
       "data and partition columns - Partition=true Skipping=false",
       "data and partition columns - Partition=false Skipping=false",
       // The scan schema contains additional row index filter columns.
-      "nested schema pruning on data condition"
+      "nested schema pruning on data condition",
+      // The number of records is not recomputed when using DVs
+      "delete throws error if number of records increases",
+      "delete logs error if number of records are missing in stats"
   )
 
   // This works correctly with DVs, but fails in classic DELETE.

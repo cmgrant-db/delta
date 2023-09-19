@@ -106,6 +106,17 @@ trait DeltaConfigsBase extends DeltaLogging {
   }
 
   /**
+   * The prefix for a category of special configs for delta universal format to support the
+   * user facing config naming convention for different table formats:
+   * "delta.universalFormat.config.[iceberg/hudi].[config_name]"
+   * Note that config_name can be arbitrary.
+   */
+  final val DELTA_UNIVERSAL_FORMAT_CONFIG_PREFIX = "delta.universalformat.config."
+
+  final val DELTA_UNIVERSAL_FORMAT_ICEBERG_CONFIG_PREFIX =
+    s"${DELTA_UNIVERSAL_FORMAT_CONFIG_PREFIX}iceberg."
+
+  /**
    * A global default value set as a SQLConf will overwrite the default value of a DeltaConfig.
    * For example, user can run:
    *   set spark.databricks.delta.properties.defaults.randomPrefixLength = 5
@@ -400,6 +411,19 @@ trait DeltaConfigsBase extends DeltaLogging {
   )
 
   /**
+   * The logRetention period to be used in DROP FEATURE ... TRUNCATE HISTORY command.
+   * The value should represent the expected duration of the longest running transaction. Setting
+   * this to a lower value than the longest running transaction may corrupt the table.
+   */
+  val TABLE_FEATURE_DROP_TRUNCATE_HISTORY_LOG_RETENTION = buildConfig[CalendarInterval](
+    "dropFeatureTruncateHistory.retentionDuration",
+    "interval 24 hours",
+    parseCalendarInterval,
+    isValidIntervalConfigValue,
+    "needs to be provided as a calendar interval such as '2 weeks'. Months " +
+    "and years are not accepted. You may specify '365 days' for a year instead.")
+
+  /**
    * The shortest duration we have to keep logically deleted data files around before deleting them
    * physically. This is to prevent failures in stale readers after compactions or partition
    * overwrites.
@@ -613,6 +637,15 @@ trait DeltaConfigsBase extends DeltaLogging {
     "must be Serializable"
   )
 
+  /** Policy to decide what kind of checkpoint to write to a table. */
+  val CHECKPOINT_POLICY = buildConfig[CheckpointPolicy.Policy](
+    key = "checkpointPolicy-dev",
+    defaultValue = CheckpointPolicy.Classic.name,
+    fromString = str => CheckpointPolicy.fromName(str),
+    validationFunction = (v => CheckpointPolicy.ALL.exists(_.name == v.name)),
+    helpMessage = s"can be one of the " +
+      s"following: ${CheckpointPolicy.Classic.name}, ${CheckpointPolicy.V2.name}")
+
   /**
    * Indicates whether Row Tracking is enabled on the table. When this flag is turned on, all rows
    * are guaranteed to have Row IDs and Row Commit Versions assigned to them, and writers are
@@ -624,6 +657,31 @@ trait DeltaConfigsBase extends DeltaLogging {
     fromString = _.toBoolean,
     validationFunction = _ => true,
     helpMessage = "needs to be a boolean.")
+
+  /**
+   * Convert the table's metadata into other storage formats after each Delta commit.
+   * Only Iceberg is supported for now
+   */
+  val UNIVERSAL_FORMAT_ENABLED_FORMATS = buildConfig[Seq[String]](
+    "universalFormat.enabledFormats",
+    "",
+    fromString = str =>
+      if (str == null || str.isEmpty) Nil
+      else str.split(","),
+    validationFunction = seq =>
+      if (seq.distinct.length != seq.length) false
+      else seq.toSet.subsetOf(UniversalFormat.SUPPORTED_FORMATS),
+    s"Must be a comma-separated list of formats from the list: " +
+    s"${UniversalFormat.SUPPORTED_FORMATS.mkString("{", ",", "}")}."
+  )
+
+  val ICEBERG_COMPAT_V1_ENABLED = buildConfig[Option[Boolean]](
+    "enableIcebergCompatV1",
+    null,
+    v => Option(v).map(_.toBoolean),
+    _ => true,
+    "needs to be a boolean."
+  )
 }
 
 object DeltaConfigs extends DeltaConfigsBase

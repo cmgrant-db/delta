@@ -25,6 +25,7 @@ import scala.collection.JavaConverters._
 
 import org.apache.spark.sql.delta.actions.{CommitInfo, Metadata, Protocol, TableFeatureProtocolUtils}
 import org.apache.spark.sql.delta.catalog.DeltaCatalog
+import org.apache.spark.sql.delta.commands.AlterTableDropFeatureDeltaCommand
 import org.apache.spark.sql.delta.constraints.Constraints
 import org.apache.spark.sql.delta.hooks.PostCommitHook
 import org.apache.spark.sql.delta.metering.DeltaLogging
@@ -44,6 +45,7 @@ import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference,
 import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
 import org.apache.spark.sql.connector.catalog.CatalogV2Implicits._
 import org.apache.spark.sql.connector.catalog.Identifier
+import org.apache.spark.sql.errors.QueryErrorsBase
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DataType, StructField, StructType}
 
@@ -118,7 +120,8 @@ trait DocsPath {
  */
 trait DeltaErrorsBase
     extends DocsPath
-    with DeltaLogging {
+    with DeltaLogging
+    with QueryErrorsBase {
 
   def baseDocsPath(spark: SparkSession): String = baseDocsPath(spark.sparkContext.getConf)
 
@@ -499,9 +502,13 @@ trait DeltaErrorsBase
 
   def notADeltaTableException(
       operation: String, deltaTableIdentifier: DeltaTableIdentifier): Throwable = {
+    notADeltaTableException(operation, deltaTableIdentifier.toString)
+  }
+
+  def notADeltaTableException(operation: String, tableName: String): Throwable = {
     new DeltaAnalysisException(
       errorClass = "DELTA_TABLE_ONLY_OPERATION",
-      messageParameters = Array(s"$deltaTableIdentifier", s"$operation"))
+      messageParameters = Array(tableName, operation))
   }
 
   def notADeltaTableException(operation: String): Throwable = {
@@ -612,6 +619,22 @@ trait DeltaErrorsBase
       errorClass = "DELTA_CANNOT_WRITE_INTO_VIEW",
       messageParameters = Array(s"$table")
     )
+  }
+
+  def castingCauseOverflowErrorInTableWrite(
+      from: DataType,
+      to: DataType,
+      columnName: String): ArithmeticException = {
+    new DeltaArithmeticException(
+      errorClass = "DELTA_CAST_OVERFLOW_IN_TABLE_WRITE",
+      messageParameters = Map(
+        "sourceType" -> toSQLType(from),
+        "targetType" -> toSQLType(to),
+        "columnName" -> toSQLId(columnName),
+        "storeAssignmentPolicyFlag" -> SQLConf.STORE_ASSIGNMENT_POLICY.key,
+        "updateAndMergeCastingFollowsAnsiEnabledFlag" ->
+          DeltaSQLConf.UPDATE_AND_MERGE_CASTING_FOLLOWS_ANSI_ENABLED_FLAG.key,
+        "ansiEnabledFlag" -> SQLConf.ANSI_ENABLED.key))
   }
 
   def notADeltaTable(table: String): Throwable = {
@@ -886,7 +909,8 @@ trait DeltaErrorsBase
   def modifyAppendOnlyTableException(tableName: String): Throwable = {
     new DeltaUnsupportedOperationException(
       errorClass = "DELTA_CANNOT_MODIFY_APPEND_ONLY",
-      messageParameters = Array(tableName, DeltaConfigs.IS_APPEND_ONLY.key)
+      // `tableName` could be null here, so convert to string first.
+      messageParameters = Array(s"$tableName", DeltaConfigs.IS_APPEND_ONLY.key)
     )
   }
 
@@ -1370,10 +1394,11 @@ trait DeltaErrorsBase
       messageParameters = Array(s"$tableId"))
   }
 
-  def nonExistentDeltaTableStreaming(table: String): Throwable = {
+  def differentDeltaTableReadByStreamingSource(
+      newTableId: String, oldTableId: String): Throwable = {
     new DeltaIllegalStateException(
-      errorClass = "DELTA_TABLE_NOT_FOUND_STREAMING",
-      messageParameters = Array(table))
+      errorClass = "DIFFERENT_DELTA_TABLE_READ_BY_STREAMING_SOURCE",
+      messageParameters = Array(newTableId, oldTableId))
   }
 
   def nonExistentColumnInSchema(column: String, schema: String): Throwable = {
@@ -1709,6 +1734,13 @@ trait DeltaErrorsBase
     new DeltaAnalysisException(
       errorClass = "DELTA_CANNOT_CHANGE_DATA_TYPE",
       messageParameters = Array(msg)
+    )
+  }
+
+  def ambiguousDataTypeChange(column: String, from: StructType, to: StructType): Throwable = {
+    new DeltaAnalysisException(
+      errorClass = "DELTA_AMBIGUOUS_DATA_TYPE_CHANGE",
+      messageParameters = Array(column, from.toDDL, to.toDDL)
     )
   }
 
@@ -2175,6 +2207,79 @@ trait DeltaErrorsBase
         supportedFeatures.map(_.name).toSeq.sorted.mkString(", ")))
   }
 
+  case class LogRetentionConfig(key: String, value: String, truncateHistoryRetention: String)
+
+  private def logRetentionConfig(metadata: Metadata): LogRetentionConfig = {
+    val logRetention = DeltaConfigs.LOG_RETENTION
+    val truncateHistoryRetention = DeltaConfigs.TABLE_FEATURE_DROP_TRUNCATE_HISTORY_LOG_RETENTION
+    LogRetentionConfig(
+      logRetention.key,
+      logRetention.fromMetaData(metadata).toString,
+      truncateHistoryRetention.fromMetaData(metadata).toString)
+  }
+
+  def dropTableFeatureHistoricalVersionsExist(
+      feature: String,
+      metadata: Metadata): DeltaTableFeatureException = {
+    val config = logRetentionConfig(metadata)
+    new DeltaTableFeatureException(
+      errorClass = "DELTA_FEATURE_DROP_HISTORICAL_VERSIONS_EXIST",
+      messageParameters = Array(feature, config.key, config.value, config.truncateHistoryRetention)
+    )
+  }
+
+  def dropTableFeatureWaitForRetentionPeriod(
+      feature: String,
+      metadata: Metadata): DeltaTableFeatureException = {
+    val config = logRetentionConfig(metadata)
+    new DeltaTableFeatureException(
+      errorClass = "DELTA_FEATURE_DROP_WAIT_FOR_RETENTION_PERIOD",
+      messageParameters = Array(feature, config.key, config.value, config.truncateHistoryRetention)
+    )
+  }
+
+  def tableFeatureDropHistoryTruncationNotAllowed(): DeltaTableFeatureException = {
+    new DeltaTableFeatureException(
+      errorClass = "DELTA_FEATURE_DROP_HISTORY_TRUNCATION_NOT_ALLOWED",
+      messageParameters = Array.empty)
+  }
+
+  def dropTableFeatureNonRemovableFeature(feature: String): DeltaTableFeatureException = {
+    new DeltaTableFeatureException(
+      errorClass = "DELTA_FEATURE_DROP_NONREMOVABLE_FEATURE",
+      messageParameters = Array(feature))
+  }
+
+  def dropTableFeatureConflictRevalidationFailed(
+      conflictingCommit: Option[CommitInfo] = None): DeltaTableFeatureException = {
+    val concurrentCommit = DeltaErrors.concurrentModificationExceptionMsg(
+      SparkEnv.get.conf, "", conflictingCommit)
+    new DeltaTableFeatureException(
+      errorClass = "DELTA_FEATURE_DROP_CONFLICT_REVALIDATION_FAIL",
+      messageParameters = Array(concurrentCommit))
+  }
+
+  def dropTableFeatureFeatureNotSupportedByClient(
+      feature: String): DeltaTableFeatureException = {
+    new DeltaTableFeatureException(
+      errorClass = "DELTA_FEATURE_DROP_UNSUPPORTED_CLIENT_FEATURE",
+      messageParameters = Array(feature))
+  }
+
+  def dropTableFeatureFeatureNotSupportedByProtocol(
+      feature: String): DeltaTableFeatureException = {
+    new DeltaTableFeatureException(
+      errorClass = "DELTA_FEATURE_DROP_FEATURE_NOT_PRESENT",
+      messageParameters = Array(feature))
+  }
+
+  def dropTableFeatureNotDeltaTableException(): Throwable = {
+    new DeltaAnalysisException(
+      errorClass = "DELTA_ONLY_OPERATION",
+      messageParameters = Array("ALTER TABLE DROP FEATURE")
+    )
+  }
+
   def concurrentAppendException(
       conflictingCommit: Option[CommitInfo],
       partition: String,
@@ -2419,12 +2524,6 @@ trait DeltaErrorsBase
     )
   }
 
-  def deltaDynamicPartitionOverwriteDisabled(): Throwable = {
-    new DeltaIllegalArgumentException(
-      errorClass = "DELTA_DYNAMIC_PARTITION_OVERWRITE_DISABLED"
-    )
-  }
-
   def overwriteSchemaUsedWithDynamicPartitionOverwrite(): Throwable = {
     new DeltaIllegalArgumentException(
       errorClass = "DELTA_OVERWRITE_SCHEMA_WITH_DYNAMIC_PARTITION_OVERWRITE"
@@ -2434,6 +2533,12 @@ trait DeltaErrorsBase
   def replaceWhereUsedInOverwrite(): Throwable = {
     new DeltaAnalysisException(
       errorClass = "DELTA_REPLACE_WHERE_IN_OVERWRITE", messageParameters = Array.empty
+    )
+  }
+
+  def deltaDynamicPartitionOverwriteDisabled(): Throwable = {
+    new DeltaIllegalArgumentException(
+      errorClass = "DELTA_DYNAMIC_PARTITION_OVERWRITE_DISABLED"
     )
   }
 
@@ -2670,21 +2775,27 @@ trait DeltaErrorsBase
       cause = cause)
   }
 
-  def streamingSchemaEvolutionException(newSchema: StructType): Throwable = {
+  def streamingMetadataEvolutionException(
+      newSchema: StructType,
+      newConfigs: Map[String, String],
+      newProtocol: Protocol): Throwable = {
     new DeltaRuntimeException(
-      errorClass = "DELTA_STREAMING_SCHEMA_EVOLUTION",
-      messageParameters = Array(formatSchema(newSchema)))
+      errorClass = "DELTA_STREAMING_METADATA_EVOLUTION",
+      messageParameters = Array(
+        formatSchema(newSchema),
+        newConfigs.map { case (k, v) =>
+          s"$k:$v"
+        }.mkString(", "),
+        newProtocol.simpleString
+      ))
   }
 
-  def streamingSchemaLogInitFailedIncompatibleSchemaException(
+  def streamingMetadataLogInitFailedIncompatibleMetadataException(
       startVersion: Long,
       endVersion: Long): Throwable = {
     new DeltaRuntimeException(
-      errorClass = "DELTA_STREAMING_SCHEMA_LOG_INIT_FAILED_INCOMPATIBLE_SCHEMA",
-      messageParameters = Array(
-        startVersion.toString, endVersion.toString,
-        DeltaSQLConf.
-          DELTA_STREAMING_UNSAFE_READ_ON_INCOMPATIBLE_SCHEMA_CHANGES_DURING_STREAM_START.key)
+      errorClass = "DELTA_STREAMING_SCHEMA_LOG_INIT_FAILED_INCOMPATIBLE_METADATA",
+      messageParameters = Array(startVersion.toString, endVersion.toString)
     )
   }
 
@@ -2733,7 +2844,8 @@ trait DeltaErrorsBase
 
   def cannotContinueStreamingPostSchemaEvolution(
       nonAdditiveSchemaChangeOpType: String,
-      schemaChangeVersion: Long,
+      previousSchemaChangeVersion: Long,
+      currentSchemaChangeVersion: Long,
       checkpointHash: Int,
       allowAllMode: String,
       opTypeSpecificAllowMode: String): Throwable = {
@@ -2741,14 +2853,21 @@ trait DeltaErrorsBase
     new DeltaRuntimeException(
       errorClass = "DELTA_STREAMING_CANNOT_CONTINUE_PROCESSING_POST_SCHEMA_EVOLUTION",
       messageParameters = Array(
-        nonAdditiveSchemaChangeOpType, schemaChangeVersion.toString,
+        nonAdditiveSchemaChangeOpType,
+        previousSchemaChangeVersion.toString,
+        currentSchemaChangeVersion.toString,
+        currentSchemaChangeVersion.toString,
         // Allow this stream to pass for this particular version
-        s"$allowAllSqlConfKey.ckpt_$checkpointHash", schemaChangeVersion.toString,
+        s"$allowAllSqlConfKey.ckpt_$checkpointHash",
+        currentSchemaChangeVersion.toString,
         // Allow this stream to pass
-        s"$allowAllSqlConfKey.ckpt_$checkpointHash", "always",
+        s"$allowAllSqlConfKey.ckpt_$checkpointHash",
+        "always",
         // Allow all streams to pass
-        allowAllSqlConfKey, "always",
-        allowAllMode, opTypeSpecificAllowMode
+        allowAllSqlConfKey,
+        "always",
+        allowAllMode,
+        opTypeSpecificAllowMode
       )
     )
   }
@@ -2816,6 +2935,27 @@ trait DeltaErrorsBase
     new DeltaIllegalStateException(errorClass = "DELTA_ROW_ID_ASSIGNMENT_WITHOUT_STATS")
   }
 
+  def addingColumnWithInternalNameFailed(colName: String): Throwable = {
+    new DeltaRuntimeException(
+      errorClass = "DELTA_ADDING_COLUMN_WITH_INTERNAL_NAME_FAILED",
+      messageParameters = Array(colName)
+    )
+  }
+
+  def materializedRowIdMetadataMissing(tableName: String): Throwable = {
+    new DeltaIllegalStateException(
+      errorClass = "DELTA_MATERIALIZED_ROW_TRACKING_COLUMN_NAME_MISSING",
+      messageParameters = Array("Row ID", tableName)
+    )
+  }
+
+  def materializedRowCommitVersionMetadataMissing(tableName: String): Throwable = {
+    new DeltaIllegalStateException(
+      errorClass = "DELTA_MATERIALIZED_ROW_TRACKING_COLUMN_NAME_MISSING",
+      messageParameters = Array("Row Commit Version", tableName)
+    )
+  }
+
   def domainMetadataDuplicate(domainName: String): Throwable = {
     new DeltaIllegalArgumentException(
       errorClass = "DELTA_DUPLICATE_DOMAIN_METADATA_INTERNAL_ERROR",
@@ -2827,6 +2967,68 @@ trait DeltaErrorsBase
     new DeltaIllegalArgumentException(
       errorClass = "DELTA_DOMAIN_METADATA_NOT_SUPPORTED",
       messageParameters = Array(domainNames)
+    )
+  }
+
+  def uniFormIcebergRequiresIcebergCompatV1(): Throwable = {
+    new DeltaUnsupportedOperationException(
+      errorClass = "DELTA_UNIVERSAL_FORMAT_VIOLATION",
+      messageParameters = Array(
+        UniversalFormat.ICEBERG_FORMAT,
+        "Requires IcebergCompatV1 to be manually enabled in order for Universal Format (Iceberg) " +
+        "to be enabled on an existing table. To enable IcebergCompatV1, set the table property " +
+        "'delta.enableIcebergCompatV1' = 'true'."
+      )
+    )
+  }
+
+  def icebergCompatV1ReplacePartitionedTableException(
+      prevPartitionCols: Seq[String],
+      newPartitionCols: Seq[String]): Throwable = {
+    new DeltaUnsupportedOperationException(
+      errorClass = "DELTA_ICEBERG_COMPAT_V1_VIOLATION.REPLACE_TABLE_CHANGE_PARTITION_NAMES",
+      messageParameters = Array(
+        prevPartitionCols.mkString("(", ",", ")"),
+        newPartitionCols.mkString("(", ",", ")")
+      )
+    )
+  }
+
+  def icebergCompatV1UnsupportedDataTypeException(schema: StructType): Throwable = {
+    new DeltaUnsupportedOperationException(
+      errorClass = "DELTA_ICEBERG_COMPAT_V1_VIOLATION.UNSUPPORTED_DATA_TYPE",
+      messageParameters = Array(schema.treeString)
+    )
+  }
+
+  def icebergCompatV1MissingRequiredTableFeatureException(tf: TableFeature): Throwable = {
+    new DeltaUnsupportedOperationException(
+      errorClass = "DELTA_ICEBERG_COMPAT_V1_VIOLATION.MISSING_REQUIRED_TABLE_FEATURE",
+      messageParameters = Array(tf.toString)
+    )
+  }
+
+  def icebergCompatV1DisablingRequiredTableFeatureException(tf: TableFeature): Throwable = {
+    new DeltaUnsupportedOperationException(
+      errorClass = "DELTA_ICEBERG_COMPAT_V1_VIOLATION.DISABLING_REQUIRED_TABLE_FEATURE",
+      messageParameters = Array(tf.toString)
+    )
+  }
+
+  def icebergCompatV1IncompatibleTableFeatureException(tf: TableFeature): Throwable = {
+    new DeltaUnsupportedOperationException(
+      errorClass = "DELTA_ICEBERG_COMPAT_V1_VIOLATION.INCOMPATIBLE_TABLE_FEATURE",
+      messageParameters = Array(tf.toString)
+    )
+  }
+
+  def icebergCompatV1WrongRequiredTablePropertyException(
+      key: String,
+      actualValue: String,
+      requiredValue: String): Throwable = {
+    new DeltaUnsupportedOperationException(
+      errorClass = "DELTA_ICEBERG_COMPAT_V1_VIOLATION.WRONG_REQUIRED_TABLE_PROPERTY",
+      messageParameters = Array(key, requiredValue, actualValue)
     )
   }
 }

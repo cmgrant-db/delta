@@ -275,7 +275,7 @@ abstract class ConvertToDeltaCommandBase(
       spark: SparkSession,
       txn: OptimisticTransaction,
       addFiles: Seq[AddFile]): Iterator[AddFile] = {
-    val initialSnapshot = new InitialSnapshot(txn.deltaLog.dataPath, txn.deltaLog, txn.metadata)
+    val initialSnapshot = new InitialSnapshot(txn.deltaLog.logPath, txn.deltaLog, txn.metadata)
     ConvertToDeltaCommand.computeStats(txn.deltaLog, initialSnapshot, addFiles)
   }
 
@@ -369,7 +369,7 @@ abstract class ConvertToDeltaCommandBase(
       // TODO: we have not decided on how to implement CONVERT TO DELTA under column mapping modes
       //  for some convert targets so we block this feature for them here
       checkColumnMapping(txn.metadata, targetTable)
-      RowId.checkStatsCollectedIfRowTrackingSupported(
+      RowTracking.checkStatsCollectedIfRowTrackingSupported(
         txn.protocol,
         collectStats,
         statsEnabled)

@@ -16,10 +16,12 @@
 
 package org.apache.spark.sql.delta
 
+// scalastyle:off import.ordering.noEmptyLine
 import java.util.concurrent.TimeUnit
 
 import scala.collection.mutable
 
+import org.apache.spark.sql.delta.RowId.RowTrackingMetadataDomain
 import org.apache.spark.sql.delta.actions._
 import org.apache.spark.sql.delta.metering.DeltaLogging
 import org.apache.spark.sql.delta.util.FileNames
@@ -51,7 +53,7 @@ private[delta] case class CurrentTransactionInfo(
     val actions: Seq[Action],
     val readSnapshot: Snapshot,
     val commitInfo: Option[CommitInfo],
-    val readRowIdHighWatermark: RowIdHighWaterMark,
+    val readRowIdHighWatermark: Long,
     val domainMetadata: Seq[DomainMetadata]) {
 
   /**
@@ -125,7 +127,7 @@ private[delta] class ConflictChecker(
 
   protected var currentTransactionInfo: CurrentTransactionInfo = initialCurrentTransactionInfo
 
-  protected val winningCommitSummary: WinningCommitSummary = createWinningCommitSummary()
+  protected lazy val winningCommitSummary: WinningCommitSummary = createWinningCommitSummary()
 
   /**
    * This function checks conflict of the `initialCurrentTransactionInfo` against the
@@ -173,6 +175,35 @@ private[delta] class ConflictChecker(
       }
       if (currentTransactionInfo.actions.exists(_.isInstanceOf[Protocol])) {
         throw DeltaErrors.protocolChangedException(winningCommitSummary.commitInfo)
+      }
+      // When a protocol downgrade occurs all other interleaved txns abort. Note, that in the
+      // opposite scenario, when the current transaction is the protocol downgrade, we resolve
+      // the conflict and proceed with the downgrade. This is because a protocol downgrade would
+      // be hard to succeed in concurrent workloads. On the other hand, a protocol downgrade is
+      // a rare event and thus not that disruptive if other concurrent transactions fail.
+      val winningProtocol = winningCommitSummary.protocol.get
+      val readProtocol = currentTransactionInfo.readSnapshot.protocol
+      val isWinnerDroppingFeatures = TableFeature.isProtocolRemovingExplicitFeatures(
+        newProtocol = winningProtocol,
+        oldProtocol = readProtocol)
+      if (isWinnerDroppingFeatures) {
+        throw DeltaErrors.protocolChangedException(winningCommitSummary.commitInfo)
+      }
+    }
+    // When the winning transaction does not change the protocol but the losing txn is
+    // a protocol downgrade, we re-validate the invariants of the removed feature.
+    // TODO: only revalidate against the snapshot of the last interleaved txn.
+    val currentProtocol = currentTransactionInfo.protocol
+    val readProtocol = currentTransactionInfo.readSnapshot.protocol
+    if (TableFeature.isProtocolRemovingExplicitFeatures(currentProtocol, readProtocol)) {
+      val winningSnapshot = deltaLog.getSnapshotAt(winningCommitSummary.commitVersion)
+      val isDowngradeCommitValid = TableFeature.validateFeatureRemovalAtSnapshot(
+        newProtocol = currentProtocol,
+        oldProtocol = readProtocol,
+        snapshot = winningSnapshot)
+      if (!isDowngradeCommitValid) {
+        throw DeltaErrors.dropTableFeatureConflictRevalidationFailed(
+          winningCommitSummary.commitInfo)
       }
     }
   }
@@ -345,6 +376,7 @@ private[delta] class ConflictChecker(
         winningDomainMetadataMap.get(domainMetadataFromCurrentTransaction.domain)) match {
         // No-conflict case.
         case (domain, None) => domain
+        case (domain, _) if RowTrackingMetadataDomain.isRowTrackingDomain(domain) => domain
         case (_, Some(_)) =>
           // Any conflict not specifically handled by a previous case must fail the transaction.
           throw new io.delta.exceptions.ConcurrentTransactionException(
@@ -377,12 +409,12 @@ private[delta] class ConflictChecker(
     // The current transaction should only assign Row Ids if they are supported.
     if (!RowId.isSupported(currentTransactionInfo.protocol)) return
 
-    val readHighWaterMark = currentTransactionInfo.readRowIdHighWatermark.highWaterMark
+    val readHighWaterMark = currentTransactionInfo.readRowIdHighWatermark
 
     // The winning transaction might have bumped the high water mark or not in case it did
     // not add new files to the table.
     val winningHighWaterMark = winningCommitSummary.actions.collectFirst {
-      case RowIdHighWaterMark(winningHighWaterMark) => winningHighWaterMark
+      case RowTrackingMetadataDomain(domain) => domain.rowIdHighWaterMark
     }.getOrElse(readHighWaterMark)
 
     var highWaterMark = winningHighWaterMark
@@ -397,14 +429,15 @@ private[delta] class ConflictChecker(
           throw DeltaErrors.rowIdAssignmentWithoutStats
         }
         Some(a.copy(baseRowId = Some(newBaseRowId)))
-      // The RowIdHighWaterMark will be replaced if it exists.
-      case _: RowIdHighWaterMark => None
+      // The row ID high water mark will be replaced if it exists.
+      case d: DomainMetadata if RowTrackingMetadataDomain.isRowTrackingDomain(d) => None
       case a => Some(a)
     }
     currentTransactionInfo = currentTransactionInfo.copy(
-      // Add RowIdHighWaterMark at the front for faster retrieval.
-      actions = RowIdHighWaterMark(highWaterMark) +: actionsWithReassignedRowIds,
-      readRowIdHighWatermark = RowIdHighWaterMark(winningHighWaterMark))
+      // Add row ID high water mark at the front for faster retrieval.
+      actions = RowTrackingMetadataDomain(highWaterMark).toDomainMetadata +:
+        actionsWithReassignedRowIds,
+      readRowIdHighWatermark = winningHighWaterMark)
   }
 
   /**

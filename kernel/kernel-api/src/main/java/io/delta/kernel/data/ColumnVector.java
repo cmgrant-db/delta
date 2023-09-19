@@ -16,14 +16,19 @@
 
 package io.delta.kernel.data;
 
+import java.math.BigDecimal;
 import java.util.List;
 import java.util.Map;
 
+import io.delta.kernel.annotation.Evolving;
 import io.delta.kernel.types.DataType;
 
 /**
  * Represents zero or more values of a single column.
+ *
+ * @since 3.0.0
  */
+@Evolving
 public interface ColumnVector extends AutoCloseable {
     /**
      * @return the data type of this column vector.
@@ -42,6 +47,7 @@ public interface ColumnVector extends AutoCloseable {
     void close();
 
     /**
+     * @param rowId
      * @return whether the value at {@code rowId} is NULL.
      */
     boolean isNullAt(int rowId);
@@ -49,13 +55,20 @@ public interface ColumnVector extends AutoCloseable {
     /**
      * Returns the boolean type value for {@code rowId}. The return value is undefined and can be
      * anything, if the slot for {@code rowId} is null.
+     *
+     * @param rowId
+     * @return Boolean value at the given row id
      */
     default boolean getBoolean(int rowId) {
         throw new UnsupportedOperationException("Invalid value request for data type");
     }
+
     /**
      * Returns the byte type value for {@code rowId}. The return value is undefined and can be
      * anything, if the slot for {@code rowId} is null.
+     *
+     * @param rowId
+     * @return Byte value at the given row id
      */
     default byte getByte(int rowId) {
         throw new UnsupportedOperationException("Invalid value request for data type");
@@ -64,6 +77,9 @@ public interface ColumnVector extends AutoCloseable {
     /**
      * Returns the short type value for {@code rowId}. The return value is undefined and can be
      * anything, if the slot for {@code rowId} is null.
+     *
+     * @param rowId
+     * @return Short value at the given row id
      */
     default short getShort(int rowId) {
         throw new UnsupportedOperationException("Invalid value request for data type");
@@ -72,6 +88,9 @@ public interface ColumnVector extends AutoCloseable {
     /**
      * Returns the int type value for {@code rowId}. The return value is undefined and can be
      * anything, if the slot for {@code rowId} is null.
+     *
+     * @param rowId
+     * @return Integer value at the given row id
      */
     default int getInt(int rowId) {
         throw new UnsupportedOperationException("Invalid value request for data type");
@@ -80,6 +99,9 @@ public interface ColumnVector extends AutoCloseable {
     /**
      * Returns the long type value for {@code rowId}. The return value is undefined and can be
      * anything, if the slot for {@code rowId} is null.
+     *
+     * @param rowId
+     * @return Long value at the given row id
      */
     default long getLong(int rowId) {
         throw new UnsupportedOperationException("Invalid value request for data type");
@@ -88,6 +110,9 @@ public interface ColumnVector extends AutoCloseable {
     /**
      * Returns the float type value for {@code rowId}. The return value is undefined and can be
      * anything, if the slot for {@code rowId} is null.
+     *
+     * @param rowId
+     * @return Float value at the given row id
      */
     default float getFloat(int rowId) {
         throw new UnsupportedOperationException("Invalid value request for data type");
@@ -96,35 +121,78 @@ public interface ColumnVector extends AutoCloseable {
     /**
      * Returns the double type value for {@code rowId}. The return value is undefined and can be
      * anything, if the slot for {@code rowId} is null.
+     *
+     * @param rowId
+     * @return Double value at the given row id
      */
     default double getDouble(int rowId) {
         throw new UnsupportedOperationException("Invalid value request for data type");
     }
 
     /**
-     * Returns the binary type value for {@code rowId}. If the slot for {@code rowId} is null, it
-     * should return null.
+     * Returns the binary type value for {@code rowId}. The return value is undefined and can be
+     * anything, if the slot for {@code rowId} is null.
+     *
+     * @param rowId
+     * @return Binary value at the given row id
      */
     default byte[] getBinary(int rowId) {
         throw new UnsupportedOperationException("Invalid value request for data type");
     }
 
     /**
-     * Returns the string type value for {@code rowId}. If the slot for {@code rowId} is null, it
-     * should return null.
+     * Returns the string type value for {@code rowId}. The return value is undefined and can be
+     * anything, if the slot for {@code rowId} is null.
+     *
+     * @param rowId
+     * @return String value at the given row id
      */
     default String getString(int rowId) {
         throw new UnsupportedOperationException("Invalid value request for data type");
     }
 
+    /**
+     * Returns the decimal type value for {@code rowId}. The return value is undefined and can be
+     * anything, if the slot for {@code rowId} is null.
+     * @param rowId
+     * @return Decimal value at the given row id
+     */
+    default BigDecimal getDecimal(int rowId) {
+        throw new UnsupportedOperationException("Invalid value request for data type");
+    }
+
+    /**
+     * Return the map type value located at {@code rowId}. The return value is undefined and can be
+     * anything, if the slot for {@code rowId} is null.
+     *
+     * @param rowId
+     * @param <K>   Return map key type
+     * @param <V>   Return map value type
+     * @return
+     */
     default <K, V> Map<K, V> getMap(int rowId) {
         throw new UnsupportedOperationException("Invalid value request for data type");
     }
 
+    /**
+     * Return the row value located at {@code rowId}. The return value is undefined and can be
+     * anything, if the slot for {@code rowId} is null.
+     *
+     * @param rowId
+     * @return
+     */
     default Row getStruct(int rowId) {
         throw new UnsupportedOperationException("Invalid value request for data type");
     }
 
+    /**
+     * Return the array value located at {@code rowId}. The return value is undefined and can be
+     * anything, if the slot for {@code rowId} is null.
+     *
+     * @param rowId
+     * @param <T>   Array element type
+     * @return
+     */
     default <T> List<T> getArray(int rowId) {
         throw new UnsupportedOperationException("Invalid value request for data type");
     }

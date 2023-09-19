@@ -28,11 +28,12 @@ import org.apache.spark.sql.delta.sources.DeltaSQLConf
 import org.apache.spark.sql.delta.stats.DeltaStatistics._
 import org.apache.spark.sql.delta.util.{DeltaFileOperations, JsonUtils}
 import org.apache.hadoop.conf.Configuration
+import org.apache.hadoop.fs.FileSystem
 import org.apache.hadoop.fs.Path
 import org.apache.parquet.hadoop.ParquetFileReader
 import org.apache.parquet.hadoop.metadata.{BlockMetaData, ParquetMetadata}
 import org.apache.parquet.io.api.Binary
-import org.apache.parquet.schema.LogicalTypeAnnotation.{DateLogicalTypeAnnotation, StringLogicalTypeAnnotation}
+import org.apache.parquet.schema.LogicalTypeAnnotation.{DateLogicalTypeAnnotation, StringLogicalTypeAnnotation, TimestampLogicalTypeAnnotation}
 import org.apache.parquet.schema.PrimitiveType
 
 import org.apache.spark.internal.Logging
@@ -88,30 +89,46 @@ object StatsCollectionUtils
     addFiles.mapPartitions { addFileIter =>
       val defaultFileSystem = new Path(dataRootDir).getFileSystem(broadcastConf.value.value)
       addFileIter.map { addFile =>
-        val path = DeltaFileOperations.absolutePath(dataRootDir, addFile.path)
-        val fileStatus = if (path.toString.startsWith(dataRootDir)) {
-          defaultFileSystem.getFileStatus(path)
-        } else {
-          path.getFileSystem(broadcastConf.value.value).getFileStatus(path)
-        }
-
-        val (stats, metric) = statsCollector.collect(
-          ParquetFileReader.readFooter(broadcastConf.value.value, fileStatus))
-
-        if (metric.totalMissingFields > 0 || metric.numMissingTypes > 0) {
-          logWarning(
-            s"StatsCollection of file `$path` misses fields/types: ${JsonUtils.toJson(metric)}")
-        }
-
-        val statsWithTightBoundsCol = {
-          val hasDeletionVector =
-            addFile.deletionVector != null && !addFile.deletionVector.isEmpty
-          stats + (TIGHT_BOUNDS -> !(setBoundsToWide || hasDeletionVector))
-        }
-
-        addFile.copy(stats = JsonUtils.toJson(statsWithTightBoundsCol))
+        computeStatsForFile(
+          addFile,
+          dataRootDir,
+          defaultFileSystem,
+          broadcastConf.value,
+          setBoundsToWide,
+          statsCollector)
       }
     }
+  }
+
+  private def computeStatsForFile(
+      addFile: AddFile,
+      dataRootDir: String,
+      defaultFileSystem: FileSystem,
+      config: SerializableConfiguration,
+      setBoundsToWide: Boolean,
+      statsCollector: StatsCollector): AddFile = {
+    val path = DeltaFileOperations.absolutePath(dataRootDir, addFile.path)
+    val fileStatus = if (path.toString.startsWith(dataRootDir)) {
+      defaultFileSystem.getFileStatus(path)
+    } else {
+      path.getFileSystem(config.value).getFileStatus(path)
+    }
+
+    val (stats, metric) = statsCollector.collect(
+      ParquetFileReader.readFooter(config.value, fileStatus))
+
+    if (metric.totalMissingFields > 0 || metric.numMissingTypes > 0) {
+      logWarning(
+        s"StatsCollection of file `$path` misses fields/types: ${JsonUtils.toJson(metric)}")
+    }
+
+    val statsWithTightBoundsCol = {
+      val hasDeletionVector =
+        addFile.deletionVector != null && !addFile.deletionVector.isEmpty
+      stats + (TIGHT_BOUNDS -> !(setBoundsToWide || hasDeletionVector))
+    }
+
+    addFile.copy(stats = JsonUtils.toJson(statsWithTightBoundsCol))
   }
 }
 
@@ -368,10 +385,12 @@ abstract class StatsCollector(
   private def aggMaxOrMin(isMax: Boolean)(blocks: Seq[BlockMetaData], index: Int): Any = {
     val columnMetadata = blocks.head.getColumns.get(index)
     val primitiveType = columnMetadata.getPrimitiveType
+    val logicalType = primitiveType.getLogicalTypeAnnotation
     // Physical type of timestamp is INT96 in both Parquet and Delta.
-    if (primitiveType.getPrimitiveTypeName == PrimitiveType.PrimitiveTypeName.INT96) {
+    if (primitiveType.getPrimitiveTypeName == PrimitiveType.PrimitiveTypeName.INT96 ||
+        logicalType.isInstanceOf[TimestampLogicalTypeAnnotation]) {
       throw new UnsupportedOperationException(
-        s"max/min stats is not supported for INT96 timestamp: ${columnMetadata.getPath}")
+        s"max/min stats is not supported for timestamp: ${columnMetadata.getPath}")
     }
 
     var aggregatedValue: Any = None
@@ -398,7 +417,6 @@ abstract class StatsCollector(
       }
     }
 
-    val logicalType = primitiveType.getLogicalTypeAnnotation
     aggregatedValue match {
       case bytes: Binary if logicalType.isInstanceOf[StringLogicalTypeAnnotation] =>
         val rawString = bytes.toStringUsingUTF8

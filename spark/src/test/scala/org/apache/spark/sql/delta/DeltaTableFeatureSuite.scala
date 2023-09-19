@@ -34,7 +34,8 @@ import org.apache.spark.sql.types.StructType
 
 class DeltaTableFeatureSuite
   extends QueryTest
-  with SharedSparkSession  with DeltaSQLCommandTest {
+  with SharedSparkSession
+  with DeltaSQLCommandTest {
 
   private lazy val testTableSchema = spark.range(1).schema
 
@@ -145,7 +146,9 @@ class DeltaTableFeatureSuite
         ChangeDataFeedTableFeature,
         GeneratedColumnsTableFeature,
         TestLegacyWriterFeature,
-        TestLegacyReaderWriterFeature))
+        TestLegacyReaderWriterFeature,
+        TestRemovableLegacyWriterFeature,
+        TestRemovableLegacyReaderWriterFeature))
     assert(
       Protocol(2, 5).implicitlySupportedFeatures === Set(
         AppendOnlyTableFeature,
@@ -155,7 +158,9 @@ class DeltaTableFeatureSuite
         ChangeDataFeedTableFeature,
         GeneratedColumnsTableFeature,
         TestLegacyWriterFeature,
-        TestLegacyReaderWriterFeature))
+        TestLegacyReaderWriterFeature,
+        TestRemovableLegacyWriterFeature,
+        TestRemovableLegacyReaderWriterFeature))
     assert(Protocol(2, TABLE_FEATURES_MIN_WRITER_VERSION).implicitlySupportedFeatures === Set())
     assert(
       Protocol(
@@ -210,7 +215,9 @@ class DeltaTableFeatureSuite
           CheckConstraintsTableFeature,
           GeneratedColumnsTableFeature,
           TestLegacyWriterFeature,
-          TestLegacyReaderWriterFeature)))
+          TestLegacyReaderWriterFeature,
+          TestRemovableLegacyWriterFeature,
+          TestRemovableLegacyReaderWriterFeature)))
   }
 
   test("protocol upgrade compatibility") {
@@ -237,7 +244,9 @@ class DeltaTableFeatureSuite
               GeneratedColumnsTableFeature,
               ColumnMappingTableFeature,
               TestLegacyWriterFeature,
-              TestLegacyReaderWriterFeature))))
+              TestLegacyReaderWriterFeature,
+              TestRemovableLegacyWriterFeature,
+              TestRemovableLegacyReaderWriterFeature))))
     assert(
       Protocol(2, 6).canUpgradeTo(
         Protocol(TABLE_FEATURES_MIN_READER_VERSION, TABLE_FEATURES_MIN_WRITER_VERSION)
@@ -249,11 +258,56 @@ class DeltaTableFeatureSuite
             GeneratedColumnsTableFeature,
             ColumnMappingTableFeature,
             TestLegacyWriterFeature,
-            TestLegacyReaderWriterFeature))))
+            TestLegacyReaderWriterFeature,
+            TestRemovableLegacyWriterFeature,
+            TestRemovableLegacyReaderWriterFeature))))
     // Features are identical but protocol versions are lower, thus `canUpgradeTo` is `false`.
     assert(
       !Protocol(TABLE_FEATURES_MIN_READER_VERSION, TABLE_FEATURES_MIN_WRITER_VERSION)
         .canUpgradeTo(Protocol(1, 1)))
+  }
+
+  test("protocol downgrade compatibility") {
+    val tableFeatureProtocol =
+      Protocol(TABLE_FEATURES_MIN_READER_VERSION, TABLE_FEATURES_MIN_WRITER_VERSION)
+    // Cannot downgrade when at a minimum writer features are not supported.
+    assert(!Protocol(1, 6).canDowngradeTo(Protocol(1, 6)))
+    // Downgrading from 3 with no features to 1 is from a functionality perspective no-op.
+    // However, version downgrade is not possible.
+    assert(!Protocol(3, 7).canDowngradeTo(Protocol(1, 7)))
+    // Downgrading from 3 with no features to 2 from a functionality perspective is an upgrade.
+    assert(!Protocol(3, 7).canDowngradeTo(Protocol(2, 7)))
+    // Valid case.
+    assert(Protocol(3, 7).withFeature(TestWriterFeature).canDowngradeTo(Protocol(3, 7)))
+    // Try downgrading the writer version.
+    assert(!Protocol(2, 7).withFeature(TestWriterFeature).canDowngradeTo(Protocol(2, 1)))
+    assert(!Protocol(2, 7).withFeature(TestWriterFeature).canDowngradeTo(Protocol(2, 5)))
+    assert(!tableFeatureProtocol.canDowngradeTo(Protocol(1, TABLE_FEATURES_MIN_WRITER_VERSION)))
+    // Only one writer feature per time.
+    assert(
+      !tableFeatureProtocol
+        .withFeatures(Seq(
+          TestWriterFeature,
+          AppendOnlyTableFeature))
+        .canDowngradeTo(tableFeatureProtocol))
+    // Remove reader+writer feature.
+    assert(tableFeatureProtocol.withFeatures(Seq(TestReaderWriterFeature))
+      .canDowngradeTo(tableFeatureProtocol))
+    // Only one feature at a time.
+    assert(
+      !tableFeatureProtocol
+        .withFeatures(Seq(TestReaderWriterFeature, TestReaderWriterMetadataAutoUpdateFeature))
+        .canDowngradeTo(tableFeatureProtocol))
+    // Only one feature at a time - multiple reader+writer features.
+    assert(
+      !tableFeatureProtocol
+        .withFeatures(Seq(TestReaderWriterFeature, TestReaderWriterMetadataAutoUpdateFeature))
+        .canDowngradeTo(tableFeatureProtocol))
+    // Only one feature at a time - mix of reader+writer and writer features.
+    assert(
+      !tableFeatureProtocol
+        .withFeatures(Seq(TestWriterFeature, TestReaderWriterFeature))
+        .canDowngradeTo(tableFeatureProtocol))
   }
 
   test("add reader and writer feature descriptors") {
@@ -270,6 +324,24 @@ class DeltaTableFeatureSuite
   test("native automatically-enabled feature can't be implicitly enabled") {
     val p = Protocol(TABLE_FEATURES_MIN_READER_VERSION, TABLE_FEATURES_MIN_WRITER_VERSION)
     assert(p.implicitlySupportedFeatures.isEmpty)
+  }
+
+  test("Table features are not automatically enabled by default table property settings") {
+    withTable("tbl") {
+      spark.range(10).write.format("delta").saveAsTable("tbl")
+      val metadata = DeltaLog.forTable(spark, TableIdentifier("tbl")).update().metadata
+      TableFeature.allSupportedFeaturesMap.values.foreach {
+        case feature: FeatureAutomaticallyEnabledByMetadata =>
+          assert(
+            !feature.metadataRequiresFeatureToBeEnabled(metadata, spark),
+            s"""
+               |${feature.name} is automatically enabled by the default metadata. This will lead to
+               |the inability of reading existing tables that do not have the feature enabled and
+               |should not reach production! If this is only for testing purposes, ignore this test.
+               """.stripMargin)
+        case _ =>
+      }
+    }
   }
 
   test("Can enable legacy metadata table feature by setting default table property key") {
@@ -365,7 +437,9 @@ class DeltaTableFeatureSuite
             GeneratedColumnsTableFeature.name,
             TestWriterFeature.name,
             TestLegacyWriterFeature.name,
-            TestLegacyReaderWriterFeature.name))
+            TestLegacyReaderWriterFeature.name,
+            TestRemovableLegacyWriterFeature.name,
+            TestRemovableLegacyReaderWriterFeature.name))
         }
       }
     }

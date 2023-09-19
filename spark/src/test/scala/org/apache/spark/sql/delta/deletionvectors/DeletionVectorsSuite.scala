@@ -19,9 +19,9 @@ package org.apache.spark.sql.delta.deletionvectors
 import java.io.File
 
 import org.apache.spark.sql.delta.{DeletionVectorsTableFeature, DeletionVectorsTestUtils, DeltaConfigs, DeltaLog, DeltaMetricsUtils, DeltaTestUtilsForTempViews}
-import org.apache.spark.sql.delta.DeltaTestUtils.BOOLEAN_DOMAIN
-import org.apache.spark.sql.delta.actions.{AddFile, RemoveFile}
-import org.apache.spark.sql.delta.actions.DeletionVectorDescriptor.EMPTY
+import org.apache.spark.sql.delta.DeltaTestUtils.{createTestAddFile, BOOLEAN_DOMAIN}
+import org.apache.spark.sql.delta.actions.{AddFile, DeletionVectorDescriptor, RemoveFile}
+import org.apache.spark.sql.delta.actions.DeletionVectorDescriptor.{inlineInLog, EMPTY}
 import org.apache.spark.sql.delta.deletionvectors.DeletionVectorsSuite._
 import org.apache.spark.sql.delta.sources.DeltaSQLConf
 import org.apache.spark.sql.delta.test.DeltaSQLCommandTest
@@ -259,6 +259,23 @@ class DeletionVectorsSuite extends QueryTest
     }
   }
 
+  Seq("name", "id").foreach(mode =>
+    test(s"DELETE with DVs with column mapping mode=$mode") {
+      withTempDir { dirName =>
+        val path = dirName.getAbsolutePath
+        val data = (0 until 50).map(x => (x % 10, x, s"foo${x % 5}"))
+        spark.conf.set("spark.databricks.delta.properties.defaults.columnMapping.mode", mode)
+        data.toDF("part", "col1", "col2").write.format("delta").partitionBy(
+          "part").save(path)
+        val tableLog = DeltaLog.forTable(spark, path)
+        enableDeletionVectorsInTable(tableLog, true)
+        spark.sql(s"DELETE FROM delta.`$path` WHERE col1 = 2")
+        checkAnswer(spark.sql(s"select * from delta.`$path` WHERE col1 = 2"), Seq())
+        verifyDVsExist(tableLog, 1)
+      }
+    }
+  )
+
   test("DELETE with DVs - existing table already has DVs") {
     withSQLConf(DeltaSQLConf.DELETE_USE_PERSISTENT_DELETION_VECTORS.key -> "true") {
       withTempDir { tempDir =>
@@ -306,6 +323,9 @@ class DeletionVectorsSuite extends QueryTest
           val opMetrics = DeltaMetricsUtils.getLastOperationMetrics(tableName)
           assert(opMetrics.getOrElse("numDeletedRows", -1) === 6)
           assert(opMetrics.getOrElse("numRemovedFiles", -1) === 1)
+          assert(opMetrics.getOrElse("numDeletionVectorsAdded", -1) === 1)
+          assert(opMetrics.getOrElse("numDeletionVectorsRemoved", -1) === 0)
+          assert(opMetrics.getOrElse("numDeletionVectorsUpdated", -1) === 0)
         }
 
         {
@@ -314,6 +334,19 @@ class DeletionVectorsSuite extends QueryTest
           val opMetrics = DeltaMetricsUtils.getLastOperationMetrics(tableName)
           assert(opMetrics.getOrElse("numDeletedRows", -1) === 1)
           assert(opMetrics.getOrElse("numRemovedFiles", -1) === 0)
+          val initialNumDVs = 0
+          val numDVUpdated = 1
+          // An "updated" DV is "deleted" then "added" again.
+          // We increment the count for "updated", "added", and "deleted".
+          assert(
+            opMetrics.getOrElse("numDeletionVectorsAdded", -1) ===
+              initialNumDVs + numDVUpdated)
+          assert(
+            opMetrics.getOrElse("numDeletionVectorsRemoved", -1) ===
+              initialNumDVs + numDVUpdated)
+          assert(
+            opMetrics.getOrElse("numDeletionVectorsUpdated", -1) ===
+              numDVUpdated)
         }
 
         {
@@ -322,6 +355,9 @@ class DeletionVectorsSuite extends QueryTest
           val opMetrics = DeltaMetricsUtils.getLastOperationMetrics(tableName)
           assert(opMetrics.getOrElse("numDeletedRows", -1) === 3)
           assert(opMetrics.getOrElse("numRemovedFiles", -1) === 1)
+          assert(opMetrics.getOrElse("numDeletionVectorsAdded", -1) === 0)
+          assert(opMetrics.getOrElse("numDeletionVectorsRemoved", -1) === 1)
+          assert(opMetrics.getOrElse("numDeletionVectorsUpdated", -1) === 0)
         }
       }
     }
@@ -584,6 +620,91 @@ class DeletionVectorsSuite extends QueryTest
         checkTableContents(Seq(2, 3, 5, 6, 7).toDF())
       }
     }
+  }
+  test("huge table: read from tables of 2B rows with existing DV of many zeros") {
+    val canonicalTable5Path = new File(table5Path).getCanonicalPath
+    checkCountAndSum("value", table5Count, table5Sum, canonicalTable5Path)
+  }
+
+  test("sanity check for non-incremental DV update") {
+    val addFile = createTestAddFile()
+    def bitmapToDvDescriptor(bitmap: RoaringBitmapArray): DeletionVectorDescriptor = {
+      DeletionVectorDescriptor.inlineInLog(
+        bitmap.serializeAsByteArray(RoaringBitmapArrayFormat.Portable),
+        bitmap.cardinality)
+    }
+    val dv0 = bitmapToDvDescriptor(RoaringBitmapArray())
+    val dv1 = bitmapToDvDescriptor(RoaringBitmapArray(0L, 1L))
+    val dv2 = bitmapToDvDescriptor(RoaringBitmapArray(0L, 2L))
+    val dv3 = bitmapToDvDescriptor(RoaringBitmapArray(3L))
+
+    def removeRows(a: AddFile, dv: DeletionVectorDescriptor): (AddFile, RemoveFile) = {
+      a.removeRows(
+        deletionVector = dv,
+        updateStats = true
+      )
+    }
+
+    // Adding an empty DV to a file is allowed.
+    removeRows(addFile, dv0)
+    // Updating with the same DV is allowed.
+    val (addFileWithDV1, _) = removeRows(addFile, dv1)
+    removeRows(addFileWithDV1, dv1)
+    // Updating with a different DV with the same cardinality and different rows should not be
+    // allowed, but is expensive to detect it.
+    removeRows(addFileWithDV1, dv2)
+
+    // Updating with a DV with lower cardinality should throw.
+    for (dv <- Seq(dv0, dv3)) {
+      assertThrows[IllegalArgumentException] {
+        removeRows(addFileWithDV1, dv)
+      }
+    }
+  }
+
+  private sealed case class DeleteUsingDVWithResults(
+      scale: String,
+      sqlRule: String,
+      count: Long,
+      sum: Long)
+  private val deleteUsingDvSmallScale = DeleteUsingDVWithResults(
+    "small",
+    "value = 1",
+    table5CountByValues.filterKeys(_ != 1).values.sum,
+    table5SumByValues.filterKeys(_ != 1).values.sum)
+  private val deleteUsingDvMediumScale = DeleteUsingDVWithResults(
+    "medium",
+    "value > 10",
+    table5CountByValues.filterKeys(_ <= 10).values.sum,
+    table5SumByValues.filterKeys(_ <= 10).values.sum)
+  private val deleteUsingDvLargeScale = DeleteUsingDVWithResults(
+    "large",
+    "value != 21",
+    table5CountByValues(21),
+    table5SumByValues(21))
+
+  // deleteUsingDvMediumScale and deleteUsingDvLargeScale runs too slow thus disabled.
+  for (deleteSpec <- Seq(deleteUsingDvSmallScale)) {
+    test(
+      s"huge table: delete a ${deleteSpec.scale} number of rows from tables of 2B rows with DVs") {
+      withTempDir { dir =>
+        FileUtils.copyDirectory(new File(table5Path), dir)
+        val log = DeltaLog.forTable(spark, dir)
+
+        withDeletionVectorsEnabled() {
+          sql(s"DELETE FROM delta.`${dir.getCanonicalPath}` WHERE ${deleteSpec.sqlRule}")
+        }
+        val (added, _) = getFileActionsInLastVersion(log)
+        assert(added.forall(_.deletionVector != null))
+        checkCountAndSum("value", deleteSpec.count, deleteSpec.sum, dir.getCanonicalPath)
+      }
+    }
+  }
+
+  private def checkCountAndSum(column: String, count: Long, sum: Long, tableDir: String): Unit = {
+    checkAnswer(
+      sql(s"SELECT count($column), sum($column) FROM delta.`$tableDir`"),
+      Seq((count, sum)).toDF())
   }
 
   private def assertPlanContains(queryDf: DataFrame, expected: String): Unit = {

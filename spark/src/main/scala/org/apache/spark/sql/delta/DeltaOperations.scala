@@ -17,6 +17,7 @@
 package org.apache.spark.sql.delta
 
 // scalastyle:off import.ordering.noEmptyLine
+import org.apache.spark.sql.delta.DeltaOperationMetrics.MetricsTransformer
 import org.apache.spark.sql.delta.actions.{Metadata, Protocol}
 import org.apache.spark.sql.delta.constraints.Constraint
 import org.apache.spark.sql.delta.sources.DeltaSQLConf
@@ -59,6 +60,19 @@ object DeltaOperations {
 
     /** Whether this operation changes data */
     def changesData: Boolean = false
+
+    /**
+     * Manually transform the deletion vector metrics, because they are not part of
+     * `operationMetrics` and are filtered out by the super.transformMetrics() call.
+     */
+    def transformDeletionVectorMetrics(
+        allMetrics: Map[String, SQLMetric],
+        dvMetrics: Map[String, MetricsTransformer] = DeltaOperationMetrics.DELETION_VECTORS)
+    : Map[String, String] = {
+      dvMetrics.flatMap { case (metric, transformer) =>
+        transformer.transformToString(metric, allMetrics)
+      }
+    }
   }
 
   abstract class OperationWithPredicates(name: String, val predicates: Seq[Expression])
@@ -72,8 +86,10 @@ object DeltaOperations {
       mode: SaveMode,
       partitionBy: Option[Seq[String]] = None,
       predicate: Option[String] = None,
-      override val userMetadata: Option[String] = None) extends Operation("WRITE") {
-    override val parameters: Map[String, Any] = Map("mode" -> mode.name()) ++
+      override val userMetadata: Option[String] = None
+  ) extends Operation("WRITE") {
+    override val parameters: Map[String, Any] = Map("mode" -> mode.name()
+    ) ++
       partitionBy.map("partitionBy" -> JsonUtils.toJson(_)) ++
       predicate.map("predicate" -> _)
 
@@ -124,9 +140,11 @@ object DeltaOperations {
       outputMode: OutputMode,
       queryId: String,
       epochId: Long,
-      override val userMetadata: Option[String] = None) extends Operation("STREAMING UPDATE") {
+      override val userMetadata: Option[String] = None
+  ) extends Operation("STREAMING UPDATE") {
     override val parameters: Map[String, Any] =
-      Map("outputMode" -> outputMode.toString, "queryId" -> queryId, "epochId" -> epochId.toString)
+      Map("outputMode" -> outputMode.toString, "queryId" -> queryId, "epochId" -> epochId.toString
+      )
     override val operationMetrics: Set[String] = DeltaOperationMetrics.STREAMING_UPDATE
     override def changesData: Boolean = true
   }
@@ -146,7 +164,8 @@ object DeltaOperations {
         strMetrics -= "numAddedFiles"
       }
 
-      strMetrics
+      val dvMetrics = transformDeletionVectorMetrics(metrics)
+      strMetrics ++ dvMetrics
     }
     override def changesData: Boolean = true
   }
@@ -202,7 +221,8 @@ object DeltaOperations {
       insertPredicate: Option[String],
       matchedPredicates: Seq[MergePredicate],
       notMatchedPredicates: Seq[MergePredicate],
-      notMatchedBySourcePredicates: Seq[MergePredicate])
+      notMatchedBySourcePredicates: Seq[MergePredicate]
+  )
     extends OperationWithPredicates(OP_MERGE, predicate.toSeq) {
 
     override val parameters: Map[String, Any] = {
@@ -242,14 +262,16 @@ object DeltaOperations {
         predicate: Option[Expression],
         matchedPredicates: Seq[MergePredicate],
         notMatchedPredicates: Seq[MergePredicate],
-        notMatchedBySourcePredicates: Seq[MergePredicate]): Merge = Merge(
+        notMatchedBySourcePredicates: Seq[MergePredicate]
+    ): Merge = Merge(
           predicate,
           updatePredicate = None,
           deletePredicate = None,
           insertPredicate = None,
           matchedPredicates,
           notMatchedPredicates,
-          notMatchedBySourcePredicates)
+          notMatchedBySourcePredicates
+    )
   }
 
   /** Recorded when an update operation is committed to the table. */
@@ -260,13 +282,17 @@ object DeltaOperations {
     override def changesData: Boolean = true
   }
   /** Recorded when the table is created. */
-  case class CreateTable(metadata: Metadata, isManaged: Boolean, asSelect: Boolean = false)
-      extends Operation("CREATE TABLE" + s"${if (asSelect) " AS SELECT" else ""}") {
+  case class CreateTable(
+      metadata: Metadata,
+      isManaged: Boolean,
+      asSelect: Boolean = false
+  ) extends Operation("CREATE TABLE" + s"${if (asSelect) " AS SELECT" else ""}") {
     override val parameters: Map[String, Any] = Map(
       "isManaged" -> isManaged.toString,
       "description" -> Option(metadata.description),
       "partitionBy" -> JsonUtils.toJson(metadata.partitionColumns),
-      "properties" -> JsonUtils.toJson(metadata.configuration))
+      "properties" -> JsonUtils.toJson(metadata.configuration)
+    )
     override val operationMetrics: Set[String] = if (!asSelect) {
       Set()
     } else {
@@ -280,14 +306,15 @@ object DeltaOperations {
       isManaged: Boolean,
       orCreate: Boolean,
       asSelect: Boolean = false,
-      override val userMetadata: Option[String] = None)
-    extends Operation(s"${if (orCreate) "CREATE OR " else ""}REPLACE TABLE" +
+      override val userMetadata: Option[String] = None
+  ) extends Operation(s"${if (orCreate) "CREATE OR " else ""}REPLACE TABLE" +
       s"${if (asSelect) " AS SELECT" else ""}") {
     override val parameters: Map[String, Any] = Map(
       "isManaged" -> isManaged.toString,
       "description" -> Option(metadata.description),
       "partitionBy" -> JsonUtils.toJson(metadata.partitionColumns),
-      "properties" -> JsonUtils.toJson(metadata.configuration))
+      "properties" -> JsonUtils.toJson(metadata.configuration)
+  )
     override val operationMetrics: Set[String] = if (!asSelect) {
       Set()
     } else {
@@ -296,8 +323,9 @@ object DeltaOperations {
     override def changesData: Boolean = true
   }
   /** Recorded when the table properties are set. */
+  val OP_SET_TBLPROPERTIES = "SET TBLPROPERTIES"
   case class SetTableProperties(
-      properties: Map[String, String]) extends Operation("SET TBLPROPERTIES") {
+      properties: Map[String, String]) extends Operation(OP_SET_TBLPROPERTIES) {
     override val parameters: Map[String, Any] = Map("properties" -> JsonUtils.toJson(properties))
   }
   /** Recorded when the table properties are unset. */
@@ -307,6 +335,14 @@ object DeltaOperations {
     override val parameters: Map[String, Any] = Map(
       "properties" -> JsonUtils.toJson(propKeys),
       "ifExists" -> ifExists)
+  }
+  /** Recorded when dropping a table feature. */
+  case class DropTableFeature(
+      featureName: String,
+      truncateHistory: Boolean) extends Operation("DROP FEATURE") {
+    override val parameters: Map[String, Any] = Map(
+      "featureName" -> featureName,
+      "truncateHistory" -> truncateHistory)
   }
   /** Recorded when columns are added. */
   case class AddColumns(
@@ -372,6 +408,11 @@ object DeltaOperations {
     override val parameters: Map[String, Any] = Map.empty
   }
 
+  /** A commit without any actions. Could be used to force creation of new checkpoints. */
+  object EmptyCommit extends Operation("Empty Commit") {
+    override val parameters: Map[String, Any] = Map.empty
+  }
+
   case class UpdateColumnMetadata(
       operationName: String,
       columns: Seq[(Seq[String], StructField)])
@@ -411,9 +452,10 @@ object DeltaOperations {
       extends OperationWithPredicates("COMPUTE STATS", predicate)
 
   /** Recorded when restoring a Delta table to an older version. */
+  val OP_RESTORE = "RESTORE"
   case class Restore(
       version: Option[Long],
-      timestamp: Option[String]) extends Operation("RESTORE") {
+      timestamp: Option[String]) extends Operation(OP_RESTORE) {
     override val parameters: Map[String, Any] = Map(
       "version" -> version,
       "timestamp" -> timestamp)
@@ -445,10 +487,11 @@ object DeltaOperations {
   }
 
   /** Recorded when cloning a Delta table into a new location. */
+  val OP_CLONE = "CLONE"
   case class Clone(
       source: String,
       sourceVersion: Long
-  ) extends Operation("CLONE") {
+  ) extends Operation(OP_CLONE) {
     override val parameters: Map[String, Any] = Map(
       "source" -> source,
       "sourceVersion" -> sourceVersion
@@ -547,6 +590,9 @@ private[delta] object DeltaOperationMetrics {
   val DELETE = Set(
     "numAddedFiles", // number of files added
     "numRemovedFiles", // number of files removed
+    "numDeletionVectorsAdded", // number of deletion vectors added
+    "numDeletionVectorsRemoved", // number of deletion vectors removed
+    "numDeletionVectorsUpdated", // number of deletion vectors updated
     "numAddedChangeFiles", // number of CDC files
     "numDeletedRows", // number of rows removed
     "numCopiedRows", // number of rows copied in the process of deleting files
@@ -588,6 +634,9 @@ private[delta] object DeltaOperationMetrics {
   val DELETE_PARTITIONS = Set(
     "numRemovedFiles", // number of files removed
     "numAddedChangeFiles", // number of CDC files generated - generally 0 in this case
+    "numDeletionVectorsAdded", // number of deletion vectors added
+    "numDeletionVectorsRemoved", // number of deletion vectors removed
+    "numDeletionVectorsUpdated", // number of deletion vectors updated
     "executionTimeMs", // time taken to execute the entire operation
     "scanTimeMs", // time taken to scan the files for matches
     "rewriteTimeMs", // time taken to rewrite the matched files
@@ -652,6 +701,14 @@ private[delta] object DeltaOperationMetrics {
       }
     }
   }
+
+  val DELETION_VECTORS: Map[String, MetricsTransformer] = Map(
+    // Adding "numDeletionVectorsUpdated" here makes the values line up with how
+    // "numFilesAdded"/"numFilesRemoved" behave.
+    "numDeletionVectorsAdded" -> SumMetrics("numDeletionVectorsAdded", "numDeletionVectorsUpdated"),
+    "numDeletionVectorsRemoved" ->
+      SumMetrics("numDeletionVectorsRemoved", "numDeletionVectorsUpdated")
+  )
 
   val TRUNCATE = Set(
     "numRemovedFiles", // number of files removed

@@ -18,21 +18,23 @@ package org.apache.spark.sql.delta.commands.convert
 
 import java.lang.reflect.InvocationTargetException
 
-import org.apache.spark.sql.delta.{DeltaColumnMapping, DeltaErrors}
+import org.apache.spark.sql.delta.{DeltaColumnMapping, DeltaErrors, SerializableFileStatus}
 import org.apache.spark.sql.delta.actions.AddFile
 import org.apache.spark.sql.delta.metering.DeltaLogging
+import org.apache.spark.sql.delta.schema.SchemaMergingUtils
 import org.apache.spark.sql.delta.sources.DeltaSQLConf
 import org.apache.spark.sql.delta.util.{DateFormatter, DeltaFileOperations, PartitionUtils, TimestampFormatter}
 import org.apache.commons.lang3.exception.ExceptionUtils
 import org.apache.hadoop.fs.{FileSystem, Path}
 
-import org.apache.spark.sql.SparkSession
+import org.apache.spark.sql.{AnalysisException, Dataset, SparkSession}
 import org.apache.spark.sql.catalyst.catalog.CatalogTable
 import org.apache.spark.sql.catalyst.expressions.Cast
 import org.apache.spark.sql.connector.catalog.Table
+import org.apache.spark.sql.execution.datasources.PartitioningUtils
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{StringType, StructType}
-import org.apache.spark.util.Utils
+import org.apache.spark.util.{SerializableConfiguration, Utils}
 
 object ConvertUtils extends ConvertUtilsBase
 
@@ -217,14 +219,101 @@ trait ConvertUtilsBase extends DeltaLogging {
   }
 
   /**
-   * A helper function to check whether a file should be included during conversion.
+   * A helper function to check whether a directory should be skipped during conversion.
    *
-   * @param fileName: the file name to check.
-   * @return true if file should be included for conversion, otherwise false.
+   * @param dirName: the directory name to check.
+   * @return true if directory should be skipped for conversion, otherwise false.
    */
-  def hiddenDirNameFilter(fileName: String): Boolean = {
+  def dirNameFilter(dirName: String): Boolean = {
     // Allow partition column name starting with underscore and dot
-    DeltaFileOperations.defaultHiddenFileFilter(fileName) && !fileName.contains("=")
+    DeltaFileOperations.defaultHiddenFileFilter(dirName) && !dirName.contains("=")
+  }
+
+  /**
+   * Lists directories non-recursively in the distributed manner.
+   *
+   * @param spark: the spark session to use.
+   * @param rootDir: the root directory of all directories to list
+   * @param dirs: the list of directories to list.
+   * @param serializableConf: the hadoop configure to use.
+   * @return a dataset of files from the listing.
+   */
+  def listDirsInParallel(
+      spark: SparkSession,
+      rootDir: String,
+      dirs: Seq[String],
+      serializableConf: SerializableConfiguration): Dataset[SerializableFileStatus] = {
+
+    import org.apache.spark.sql.delta.implicits._
+
+    val conf = spark.sparkContext.broadcast(serializableConf)
+    val parallelism = spark.sessionState.conf.parallelPartitionDiscoveryParallelism
+
+    val rdd = spark.sparkContext.parallelize(dirs, math.min(parallelism, dirs.length))
+      .mapPartitions { batch =>
+        batch.flatMap { dir =>
+          DeltaFileOperations
+            .localListDirs(conf.value.value, Seq(dir), recursive = false)
+            .filter(!_.isDir)
+        }
+      }
+    spark.createDataset(rdd)
+  }
+
+  /**
+   * Merges the schemas of the ConvertTargetFiles.
+   *
+   * @param spark: the SparkSession used for schema merging.
+   * @param partitionSchema: the partition schema to be merged with the data schema.
+   * @param convertTargetFiles: the Dataset of ConvertTargetFiles to be merged.
+   * @return the merged StructType representing the combined schema of the Parquet files.
+   * @throws DeltaErrors.failedInferSchema If no schemas are found for merging.
+   */
+  def mergeSchemasInParallel(
+      spark: SparkSession,
+      partitionSchema: StructType,
+      convertTargetFiles: Dataset[ConvertTargetFile]): StructType = {
+    import org.apache.spark.sql.delta.implicits._
+    val partiallyMergedSchemas = convertTargetFiles.mapPartitions { iterator =>
+      var dataSchema: StructType = StructType(Seq())
+      iterator.foreach { file =>
+        try {
+          dataSchema = SchemaMergingUtils.mergeSchemas(dataSchema,
+            StructType.fromDDL(file.parquetSchemaDDL.get).asNullable)
+        } catch {
+          case cause: AnalysisException =>
+            throw DeltaErrors.failedMergeSchemaFile(
+              file.fileStatus.path, StructType.fromDDL(file.parquetSchemaDDL.get).treeString, cause)
+        }
+      }
+      Iterator.single(dataSchema.toDDL)
+    }.collect().filter(_.nonEmpty)
+
+    if (partiallyMergedSchemas.isEmpty) {
+      throw DeltaErrors.failedInferSchema
+    }
+    var mergedSchema: StructType = StructType(Seq())
+    partiallyMergedSchemas.foreach { schema =>
+      mergedSchema = SchemaMergingUtils.mergeSchemas(mergedSchema, StructType.fromDDL(schema))
+    }
+    PartitioningUtils.mergeDataAndPartitionSchema(
+      mergedSchema,
+      StructType(partitionSchema.fields.toSeq),
+      spark.sessionState.conf.caseSensitiveAnalysis)._1
   }
 }
 
+/**
+ * Configuration for fetching Parquet schema.
+ *
+ * @param assumeBinaryIsString: whether unannotated BINARY fields should be assumed to be Spark
+ *                              SQL [[StringType]] fields.
+ * @param assumeInt96IsTimestamp: whether unannotated INT96 fields should be assumed to be Spark
+ *                                SQL [[TimestampType]] fields.
+ * @param ignoreCorruptFiles: a boolean indicating whether corrupt files should be ignored during
+ *                            schema retrieval.
+ */
+case class ParquetSchemaFetchConfig(
+  assumeBinaryIsString: Boolean,
+  assumeInt96IsTimestamp: Boolean,
+  ignoreCorruptFiles: Boolean)

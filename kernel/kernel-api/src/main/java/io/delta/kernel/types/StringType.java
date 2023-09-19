@@ -13,11 +13,20 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package io.delta.kernel.types;
 
-public class StringType extends DataType {
+import io.delta.kernel.annotation.Evolving;
+
+/**
+ * The data type representing {@code string} type values.
+ *
+ * @since 3.0.0
+ */
+@Evolving
+public class StringType extends BasePrimitiveType {
     public static final StringType INSTANCE = new StringType();
 
-    private StringType() { }
+    private StringType() {
+        super("string");
+    }
 }

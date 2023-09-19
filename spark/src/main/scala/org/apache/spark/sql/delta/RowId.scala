@@ -16,15 +16,33 @@
 
 package org.apache.spark.sql.delta
 
-import org.apache.spark.sql.delta.actions.{Action, AddFile, Metadata, Protocol, RowIdHighWaterMark}
+import org.apache.spark.sql.delta.actions.{Action, AddFile, DomainMetadata, Metadata, Protocol}
 import org.apache.spark.sql.delta.actions.TableFeatureProtocolUtils.propertyKey
 
 /**
  * Collection of helpers to handle Row IDs.
  */
 object RowId {
+  /**
+   * Metadata domain for the high water mark stored using a [[DomainMetadata]] action.
+   */
+  case class RowTrackingMetadataDomain(rowIdHighWaterMark: Long)
+      extends JsonMetadataDomain[RowTrackingMetadataDomain] {
+    override val domainName: String = RowTrackingMetadataDomain.domainName
+  }
 
-  val MISSING_HIGH_WATER_MARK: RowIdHighWaterMark = RowIdHighWaterMark(highWaterMark = -1L)
+  object RowTrackingMetadataDomain extends JsonMetadataDomainUtils[RowTrackingMetadataDomain] {
+    override protected val domainName = "delta.rowTracking"
+
+    def unapply(action: Action): Option[RowTrackingMetadataDomain] = action match {
+      case d: DomainMetadata if d.domain == domainName => Some(fromJsonConfiguration(d))
+      case _ => None
+    }
+
+    def isRowTrackingDomain(d: DomainMetadata): Boolean = d.domain == domainName
+  }
+
+  val MISSING_HIGH_WATER_MARK: Long = -1L
 
   /**
    * Returns whether the protocol version supports the Row ID table feature. Whenever Row IDs are
@@ -77,9 +95,8 @@ object RowId {
       actions: Iterator[Action]): Iterator[Action] = {
     if (!isSupported(protocol)) return actions
 
-    val oldHighWatermark = extractHighWatermark(snapshot)
-        .getOrElse(MISSING_HIGH_WATER_MARK)
-        .highWaterMark
+    val oldHighWatermark = extractHighWatermark(snapshot).getOrElse(MISSING_HIGH_WATER_MARK)
+
     var newHighWatermark = oldHighWatermark
 
     val actionsWithFreshRowIds = actions.map {
@@ -89,7 +106,7 @@ object RowId {
           throw DeltaErrors.rowIdAssignmentWithoutStats
         }
         a.copy(baseRowId = Some(baseRowId))
-      case _: RowIdHighWaterMark =>
+      case d: DomainMetadata if RowTrackingMetadataDomain.isRowTrackingDomain(d) =>
         throw new IllegalStateException(
           "Manually setting the Row ID high water mark is not allowed")
       case other => other
@@ -100,7 +117,7 @@ object RowId {
       // exhaust the remapped actions iterator. At that point, the watermark (changed or not)
       // decides whether the iterator is empty or infinite; take(1) below to bound it.
       override def hasNext(): Boolean = newHighWatermark != oldHighWatermark
-      override def next(): Action = RowIdHighWaterMark(newHighWatermark)
+      override def next(): Action = RowTrackingMetadataDomain(newHighWatermark).toDomainMetadata
     }
     actionsWithFreshRowIds ++ newHighWatermarkAction.take(1)
   }
@@ -108,23 +125,6 @@ object RowId {
   /**
    * Extracts the high watermark of row IDs from a snapshot.
    */
-  private[delta] def extractHighWatermark(snapshot: Snapshot): Option[RowIdHighWaterMark] = {
-    snapshot.rowIdHighWaterMarkOpt
-  }
-
-  /**
-   * Checks whether CONVERT TO DELTA collects statistics if row tracking is supported. If it does
-   * not collect statistics, we cannot assign fresh row IDs, hence we throw an error to either rerun
-   * the command without enabling the row tracking table feature, or to enable the necessary
-   * flags to collect statistics.
-   */
-  private[delta] def checkStatsCollectedIfRowTrackingSupported(
-      protocol: Protocol,
-      convertToDeltaShouldCollectStats: Boolean,
-      statsCollectionEnabled: Boolean): Unit = {
-    if (!isSupported(protocol)) return
-    if (!convertToDeltaShouldCollectStats || !statsCollectionEnabled) {
-      throw DeltaErrors.convertToDeltaRowTrackingEnabledWithoutStatsCollection
-    }
-  }
+  private[delta] def extractHighWatermark(snapshot: Snapshot): Option[Long] =
+    RowTrackingMetadataDomain.fromSnapshot(snapshot).map(_.rowIdHighWaterMark)
 }

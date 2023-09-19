@@ -28,7 +28,7 @@ import org.apache.spark.sql.delta.sources.DeltaSQLConf
 
 import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.analysis.UnresolvedAttribute
-import org.apache.spark.sql.catalyst.expressions.{And, Expression, Literal}
+import org.apache.spark.sql.catalyst.expressions.{And, Attribute, Expression, Literal}
 import org.apache.spark.sql.catalyst.plans.logical.DeleteFromTable
 import org.apache.spark.sql.catalyst.util.CharVarcharUtils
 import org.apache.spark.sql.execution.command.LeafRunnableCommand
@@ -96,10 +96,11 @@ case class WriteIntoDelta(
       }
 
       val actions = write(txn, sparkSession)
-      val operation = DeltaOperations.Write(mode, Option(partitionColumns),
-        options.replaceWhere, options.userMetadata)
-      txn.commit(actions, operation)
-
+      val operation = DeltaOperations.Write(
+        mode, Option(partitionColumns),
+        options.replaceWhere, options.userMetadata
+      )
+      txn.commitIfNeeded(actions, operation)
     }
     Seq.empty
   }

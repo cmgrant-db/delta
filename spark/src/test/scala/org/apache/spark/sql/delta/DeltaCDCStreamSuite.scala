@@ -39,7 +39,8 @@ import org.apache.spark.sql.streaming.{StreamingQuery, StreamingQueryException, 
 import org.apache.spark.sql.types.StructType
 
 trait DeltaCDCStreamSuiteBase extends StreamTest with DeltaSQLCommandTest
-  with DeltaSourceSuiteBase with DeltaColumnMappingTestUtils {
+  with DeltaSourceSuiteBase
+  with DeltaColumnMappingTestUtils {
 
   import testImplicits._
   import io.delta.implicits._
@@ -1004,6 +1005,40 @@ trait DeltaCDCStreamSuiteBase extends StreamTest with DeltaSQLCommandTest
       } finally {
         q.stop()
       }
+    }
+  }
+
+  // LC-1281: Ensure that when we would split batches into one file at a time, we still produce
+  // correct CDF even in cases where the CDF may need to compare multiple file actions from the
+  // same commit to be correct, such as with persistent deletion vectors.
+  test("double delete-only on the same file") {
+    withTempDir { tableDir =>
+      val tablePath = tableDir.toString
+      spark.range(start = 0L, end = 10L, step = 1L, numPartitions = 1).toDF("id")
+        .write.format("delta").save(tablePath)
+
+      spark.sql(s"DELETE FROM delta.`$tablePath` WHERE id IN (1, 3, 6)")
+      spark.sql(s"DELETE FROM delta.`$tablePath` WHERE id IN (2, 4, 7)")
+
+      val stream = spark.readStream
+        .format("delta")
+        .option(DeltaOptions.CDC_READ_OPTION, true)
+        .option(DeltaOptions.MAX_FILES_PER_TRIGGER_OPTION, 1)
+        .option(DeltaOptions.STARTING_VERSION_OPTION, 1)
+        .load(tablePath)
+        .drop(CDCReader.CDC_COMMIT_TIMESTAMP)
+
+      testStream(stream)(
+        ProcessAllAvailable(),
+        CheckAnswer(
+          (1L, "delete", 1L),
+          (3L, "delete", 1L),
+          (6L, "delete", 1L),
+          (2L, "delete", 2L),
+          (4L, "delete", 2L),
+          (7L, "delete", 2L)
+        )
+      )
     }
   }
 }

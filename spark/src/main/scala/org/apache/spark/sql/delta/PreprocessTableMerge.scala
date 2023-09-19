@@ -152,7 +152,8 @@ case class PreprocessTableMerge(override val conf: SQLConf)
           conf.resolver(insertAct.targetColNameParts.head, col.name)
         }
       }.map { col =>
-        DeltaMergeAction(Seq(col.name), Literal(null, col.dataType), targetColNameResolved = true)
+        val defaultValue: Expression = Literal(null, col.dataType)
+        DeltaMergeAction(Seq(col.name), defaultValue, targetColNameResolved = true)
       }
 
       val actions = m.resolvedActions ++ implicitActions
@@ -174,7 +175,8 @@ case class PreprocessTableMerge(override val conf: SQLConf)
             castIfNeeded(
               a.expr,
               targetAttrib.dataType,
-              allowStructEvolution = migrateSchema),
+              allowStructEvolution = migrateSchema,
+              targetAttrib.name),
             targetColNameResolved = true)
         }.getOrElse {
           // If a target table column was not found in the INSERT columns and expressions,

@@ -26,7 +26,7 @@ import scala.sys.process.Process
 
 // scalastyle:off import.ordering.noEmptyLine
 import org.apache.spark.sql.delta.DeltaErrors.generateDocsLink
-import org.apache.spark.sql.delta.actions.{Action, Protocol}
+import org.apache.spark.sql.delta.actions.{Action, Metadata, Protocol}
 import org.apache.spark.sql.delta.actions.TableFeatureProtocolUtils.{TABLE_FEATURES_MIN_READER_VERSION, TABLE_FEATURES_MIN_WRITER_VERSION}
 import org.apache.spark.sql.delta.catalog.DeltaCatalog
 import org.apache.spark.sql.delta.constraints.CharVarcharConstraint
@@ -35,6 +35,7 @@ import org.apache.spark.sql.delta.constraints.Constraints.NotNull
 import org.apache.spark.sql.delta.hooks.PostCommitHook
 import org.apache.spark.sql.delta.schema.{DeltaInvariantViolationException, InvariantViolationException, SchemaMergingUtils, SchemaUtils, UnsupportedDataTypeInfo}
 import org.apache.spark.sql.delta.sources.DeltaSQLConf
+import org.apache.spark.sql.delta.test.DeltaSQLCommandTest
 import io.delta.sql.DeltaSparkSessionExtension
 import org.apache.hadoop.fs.Path
 import org.json4s.JString
@@ -51,14 +52,18 @@ import org.apache.spark.sql.catalyst.expressions.Uuid
 import org.apache.spark.sql.catalyst.parser.CatalystSqlParser
 import org.apache.spark.sql.connector.catalog.CatalogV2Implicits._
 import org.apache.spark.sql.connector.catalog.Identifier
+import org.apache.spark.sql.errors.QueryErrorsBase
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.test.{SharedSparkSession, SQLTestUtils}
 import org.apache.spark.sql.types.{CalendarIntervalType, DataTypes, DateType, IntegerType, StringType, StructField, StructType, TimestampNTZType}
 
 trait DeltaErrorsSuiteBase
     extends QueryTest
-    with SharedSparkSession    with GivenWhenThen
-    with SQLTestUtils {
+    with SharedSparkSession
+    with GivenWhenThen
+    with DeltaSQLCommandTest
+    with SQLTestUtils
+    with QueryErrorsBase {
 
   val MAX_URL_ACCESS_RETRIES = 3
   val path = "/sample/path"
@@ -157,6 +162,9 @@ trait DeltaErrorsSuiteBase
     )
     testUrls()
   }
+
+  protected def multipleSourceRowMatchingTargetRowInMergeUrl: String =
+    "/delta-update.html#upsert-into-a-table-using-merge"
 
   test("test DeltaErrors methods -- part 1") {
     {
@@ -284,6 +292,24 @@ trait DeltaErrorsSuiteBase
         e.getMessage == s"$table is a view. Writes to a view are not supported.")
     }
     {
+      val sourceType = IntegerType
+      val targetType = DateType
+      val columnName = "column_name"
+      val e = intercept[DeltaArithmeticException] {
+        throw DeltaErrors.castingCauseOverflowErrorInTableWrite(sourceType, targetType, columnName)
+      }
+      assert(e.getErrorClass == "DELTA_CAST_OVERFLOW_IN_TABLE_WRITE")
+      assert(e.getSqlState == "22003")
+      assert(e.getMessageParameters.get("sourceType") == toSQLType(sourceType))
+      assert(e.getMessageParameters.get("targetType") == toSQLType(targetType))
+      assert(e.getMessageParameters.get("columnName") == toSQLId(columnName))
+      assert(e.getMessageParameters.get("storeAssignmentPolicyFlag")
+        == SQLConf.STORE_ASSIGNMENT_POLICY.key)
+      assert(e.getMessageParameters.get("updateAndMergeCastingFollowsAnsiEnabledFlag")
+        ==  DeltaSQLConf.UPDATE_AND_MERGE_CASTING_FOLLOWS_ANSI_ENABLED_FLAG.key)
+      assert(e.getMessageParameters.get("ansiEnabledFlag") == SQLConf.ANSI_ENABLED.key)
+    }
+    {
       val e = intercept[DeltaAnalysisException] {
         throw DeltaErrors.invalidColumnName(name = "col-1")
       }
@@ -407,15 +433,18 @@ trait DeltaErrorsSuiteBase
       }
       assert(e.getMessage == s"Delta table $table doesn't exist.")
     }
-    {
-      val table = "t"
-      val e = intercept[DeltaIllegalStateException] {
-        throw DeltaErrors.nonExistentDeltaTableStreaming(table)
-      }
-      assert(e.getMessage ==
-        s"Delta table $table doesn't exist. Please delete your streaming query " +
-        "checkpoint and restart.")
-    }
+    checkError(
+      exception = intercept[DeltaIllegalStateException] {
+        throw DeltaErrors.differentDeltaTableReadByStreamingSource(
+          newTableId = "027fb01c-94aa-4cab-87cb-5aab6aec6d17",
+          oldTableId = "2edf2c02-bb63-44e9-a84c-517fad0db296")
+      },
+      errorClass = "DIFFERENT_DELTA_TABLE_READ_BY_STREAMING_SOURCE",
+      parameters = Map(
+        "oldTableId" -> "2edf2c02-bb63-44e9-a84c-517fad0db296",
+        "newTableId" -> "027fb01c-94aa-4cab-87cb-5aab6aec6d17")
+    )
+
     {
       val e = intercept[DeltaAnalysisException] {
         throw DeltaErrors.nonExistentColumnInSchema("c", "s")
@@ -1507,6 +1536,40 @@ trait DeltaErrorsSuiteBase
       assert(e.getMessage == "Creating a bloom filter index on a column with type date is " +
         "unsupported: col1")
     }
+    {
+      val e = intercept[DeltaTableFeatureException] {
+        throw DeltaErrors.tableFeatureDropHistoryTruncationNotAllowed()
+      }
+      assert(e.getErrorClass == "DELTA_FEATURE_DROP_HISTORY_TRUNCATION_NOT_ALLOWED")
+      assert(e.getSqlState == "0AKDE")
+      assert(e.getMessage == "History truncation is only relevant for reader features.")
+    }
+    {
+      val logRetention = DeltaConfigs.LOG_RETENTION
+      val e = intercept[DeltaTableFeatureException] {
+        throw DeltaErrors.dropTableFeatureWaitForRetentionPeriod(
+          "test_feature",
+          Metadata(configuration = Map(logRetention.key -> "30 days")))
+      }
+      assert(e.getErrorClass == "DELTA_FEATURE_DROP_WAIT_FOR_RETENTION_PERIOD")
+      assert(e.getSqlState == "0AKDE")
+
+      val expectedMessage =
+        """Dropping test_feature was partially successful.
+          |
+          |The feature is now no longer used in the current version of the table. However, the feature
+          |is still present in historical versions of the table. The table feature cannot be dropped
+          |from the table protocol until these historical versions have expired.
+          |
+          |To drop the table feature from the protocol, please wait for the historical versions to
+          |expire, and then repeat this command. The retention period for historical versions is
+          |currently configured as delta.logRetentionDuration=30 days.
+          |
+          |Alternatively, please wait for the TRUNCATE HISTORY retention period to expire (24 hours)
+          |and then run:
+          |    ALTER TABLE table_name DROP FEATURE feature_name TRUNCATE HISTORY""".stripMargin
+      assert(e.getMessage == expectedMessage)
+    }
   }
 
   test("test DeltaErrors methods -- part 2") {
@@ -1875,6 +1938,30 @@ trait DeltaErrorsSuiteBase
       assert(e.getErrorClass == "DELTA_ZORDERING_ON_COLUMN_WITHOUT_STATS")
       assert(e.getSqlState == "KD00D")
     }
+    {
+      checkError(
+        exception = intercept[DeltaIllegalStateException] {
+          throw MaterializedRowId.missingMetadataException("table_name")
+        },
+        errorClass = "DELTA_MATERIALIZED_ROW_TRACKING_COLUMN_NAME_MISSING",
+        parameters = Map(
+          "rowTrackingColumn" -> "Row ID",
+          "tableName" -> "table_name"
+        )
+      )
+    }
+    {
+      checkError(
+        exception = intercept[DeltaIllegalStateException] {
+          throw MaterializedRowCommitVersion.missingMetadataException("table_name")
+        },
+        errorClass = "DELTA_MATERIALIZED_ROW_TRACKING_COLUMN_NAME_MISSING",
+        parameters = Map(
+          "rowTrackingColumn" -> "Row Commit Version",
+          "tableName" -> "table_name"
+        )
+      )
+    }
   }
 
   // Complier complains the lambda function is too large if we put all tests in one lambda
@@ -2038,8 +2125,10 @@ trait DeltaErrorsSuiteBase
       assert(e.getErrorClass == "DELTA_MULTIPLE_SOURCE_ROW_MATCHING_TARGET_ROW_IN_MERGE")
       assert(e.getSqlState == "21506")
 
-      val docLink = generateDocsLink(spark.sparkContext.getConf,
-        "/delta-update.html#upsert-into-a-table-using-merge", skipValidation = true)
+      val docLink = generateDocsLink(
+        spark.sparkContext.getConf,
+        multipleSourceRowMatchingTargetRowInMergeUrl,
+        skipValidation = true)
       val msg =
         s"""Cannot perform Merge as multiple source rows matched and attempted to modify the same
            |target row in the Delta table in possibly conflicting ways. By SQL semantics of Merge,
@@ -2785,22 +2874,26 @@ trait DeltaErrorsSuiteBase
            |`table1`.""".stripMargin)
     }
     {
-      val e = intercept[AnalysisException] {
-        DeltaTableValueFunctions.resolveChangesTableValueFunctions(
-          spark, fnName = "dummy", args = Seq.empty)
+      DeltaTableValueFunctions.supportedFnNames.foreach { fnName =>
+        {
+          val e = intercept[AnalysisException] {
+            sql(s"SELECT * FROM ${fnName}()").collect()
+          }
+          assert(e.getErrorClass == "INCORRECT_NUMBER_OF_ARGUMENTS")
+          assert(e.getMessage.contains(
+            s"not enough args, $fnName requires at least 2 arguments " +
+              "and at most 3 arguments."))
+        }
+        {
+          val e = intercept[AnalysisException] {
+            sql(s"SELECT * FROM ${fnName}(1, 2, 3, 4, 5)").collect()
+          }
+          assert(e.getErrorClass == "INCORRECT_NUMBER_OF_ARGUMENTS")
+          assert(e.getMessage.contains(
+            s"too many args, $fnName requires at least 2 arguments " +
+              "and at most 3 arguments."))
+        }
       }
-      assert(e.getErrorClass == "INCORRECT_NUMBER_OF_ARGUMENTS")
-      assert(e.getMessage.contains(
-        "not enough args, dummy requires at least 2 arguments and at most 3 arguments."))
-    }
-    {
-      val e = intercept[AnalysisException] {
-        DeltaTableValueFunctions.resolveChangesTableValueFunctions(
-          spark, fnName = "dummy", args = Seq("1".expr, "2".expr, "3".expr, "4".expr, "5".expr))
-      }
-      assert(e.getErrorClass == "INCORRECT_NUMBER_OF_ARGUMENTS")
-      assert(e.getMessage.contains(
-        "too many args, dummy requires at least 2 arguments and at most 3 arguments."))
     }
     {
       val e = intercept[DeltaAnalysisException] {

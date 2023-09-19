@@ -31,7 +31,8 @@ import org.apache.spark.sql.test.{SharedSparkSession, SQLTestUtils}
 import org.apache.spark.sql.types.{ArrayType, IntegerType, MapType, StringType, StructField, StructType}
 
 class CheckConstraintsSuite extends QueryTest
-    with SharedSparkSession    with DeltaSQLCommandTest
+    with SharedSparkSession
+    with DeltaSQLCommandTest
     with SQLTestUtils {
 
 
@@ -57,7 +58,7 @@ class CheckConstraintsSuite extends QueryTest
 
   test("can't add unparseable constraint") {
     withTestTable { table =>
-      val e = intercept[AnalysisException] {
+      val e = intercept[ParseException] {
         sql(s"ALTER TABLE $table\nADD CONSTRAINT lessThan5 CHECK (id <)")
       }
       // Make sure we're still getting a useful parse error, even though we do some complicated

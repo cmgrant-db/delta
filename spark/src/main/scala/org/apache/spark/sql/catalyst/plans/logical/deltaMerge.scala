@@ -152,7 +152,7 @@ object DeltaMergeIntoClause {
     if (colNames.isEmpty && isEmptySeqEqualToStar) {
       Seq[Expression](UnresolvedStar(None))
     } else {
-      colNames.zip(exprs).map { case (col, expr) => DeltaMergeAction(col.nameParts, expr) }
+      (colNames, exprs).zipped.map { (col, expr) => DeltaMergeAction(col.nameParts, expr) }
     }
   }
 
@@ -394,7 +394,7 @@ object DeltaMergeInto {
   }
 
   def resolveReferencesAndSchema(merge: DeltaMergeInto, conf: SQLConf)(
-      resolveExpr: (Expression, LogicalPlan) => Expression): DeltaMergeInto = {
+      resolveExprs: (Seq[Expression], Seq[LogicalPlan]) => Seq[Expression]): DeltaMergeInto = {
     val DeltaMergeInto(
       target,
       source,
@@ -405,39 +405,49 @@ object DeltaMergeInto {
       _,
       _) = merge
 
-    // We must do manual resolution as the expressions in different clauses of the MERGE have
-    // visibility of the source, the target or both. Additionally, the resolution logic operates
-    // on the output of the `children` of the operator in question. Since for MERGE we must
-    // consider each child separately, we also must make these dummy nodes to avoid
-    // "skipping" the effects of the top node in these query plans.
-
-    val fakeSourcePlan = Project(source.output, source)
-    val fakeTargetPlan = Project(target.output, target)
-
     /**
-     * Resolves expression with given plan or fail using given message. It makes a best-effort
+     * Resolves expressions against given plans or fail using given message. It makes a best-effort
      * attempt to throw specific error messages on which part of the query has a problem.
      */
-    def resolveOrFail(expr: Expression, plan: LogicalPlan, mergeClauseType: String): Expression = {
-      val resolvedExpr = resolveExpr(expr, plan)
-      resolvedExpr.flatMap(_.references).filter(!_.resolved).foreach { a =>
+    def resolveOrFail(
+        exprs: Seq[Expression],
+        plansToResolveExprs: Seq[LogicalPlan],
+        mergeClauseType: String)
+      : Seq[Expression] = {
+      val resolvedExprs = resolveExprs(exprs, plansToResolveExprs)
+      resolvedExprs.foreach(assertResolved(_, plansToResolveExprs, mergeClauseType))
+      resolvedExprs
+    }
+
+    /**
+     * Convenience wrapper around `resolveOrFail()` when resolving a single expression.
+     */
+    def resolveSingleExprOrFail(
+        expr: Expression,
+        plansToResolveExpr: Seq[LogicalPlan],
+        mergeClauseType: String)
+      : Expression = resolveOrFail(Seq(expr), plansToResolveExpr, mergeClauseType).head
+
+    def assertResolved(expr: Expression, plans: Seq[LogicalPlan], mergeClauseType: String): Unit = {
+      expr.flatMap(_.references).filter(!_.resolved).foreach { a =>
         // Note: This will throw error only on unresolved attribute issues,
         // not other resolution errors like mismatched data types.
-        val cols = "columns " + plan.children.flatMap(_.output).map(_.sql).mkString(", ")
+        val cols = "columns " + plans.flatMap(_.output).map(_.sql).mkString(", ")
         throw new DeltaAnalysisException(
           errorClass = "DELTA_MERGE_UNRESOLVED_EXPRESSION",
           messageParameters = Array(a.sql, mergeClauseType, cols),
           origin = Some(a.origin))
       }
-      resolvedExpr
     }
 
     val canAutoMigrate = conf.getConf(DeltaSQLConf.DELTA_SCHEMA_AUTO_MIGRATE)
     /**
-     * Resolves a clause using the given plan (used for resolving the action exprs) and
+     * Resolves a clause using the given plans (used for resolving the action exprs) and
      * returns the resolved clause.
      */
-    def resolveClause[T <: DeltaMergeIntoClause](clause: T, planToResolveAction: LogicalPlan): T = {
+    def resolveClause[T <: DeltaMergeIntoClause](
+        clause: T,
+        plansToResolveAction: Seq[LogicalPlan]): T = {
 
       /*
        * Returns the sequence of [[DeltaMergeActions]] corresponding to
@@ -475,12 +485,15 @@ object DeltaMergeInto {
             // column name. The target columns do not need resolution. The right hand side
             // expression (i.e. sourceColumnBySameName) needs to be resolved only by the source
             // plan.
-            fakeTargetPlan.output.map(_.name).map { tgtColName =>
-              val resolvedExpr = resolveOrFail(
-                UnresolvedAttribute.quotedString(s"`$tgtColName`"),
-                fakeSourcePlan, s"$typ clause")
-              DeltaMergeAction(Seq(tgtColName), resolvedExpr, targetColNameResolved = true)
+            val unresolvedExprs = target.output.map { attr =>
+              UnresolvedAttribute.quotedString(s"`${attr.name}`")
             }
+            val resolvedExprs = resolveOrFail(unresolvedExprs, Seq(source), s"$typ clause")
+            (resolvedExprs, target.output.map(_.name))
+              .zipped
+              .map { (resolvedExpr, targetColName) =>
+                DeltaMergeAction(Seq(targetColName), resolvedExpr, targetColNameResolved = true)
+              }
           case _: UnresolvedStar if canAutoMigrate =>
             clause match {
               case _: DeltaMergeIntoNotMatchedInsertClause =>
@@ -513,25 +526,29 @@ object DeltaMergeInto {
             // If clause allows nested field to be target, then this will return the all the
             // parts of the name (e.g., "a.b" -> Seq("a", "b")). Otherwise, this will
             // return only one string.
-            val resolvedNameParts = {
-              try {
-                DeltaUpdateTable.getTargetColNameParts(
-                  resolveOrFail(unresolvedAttrib, fakeTargetPlan, s"$typ clause"),
-                  resolutionErrorMsg)
-              } catch {
-                // Allow schema evolution for update and insert non-star when the column is not in
-                // the target.
-                case _: AnalysisException
-                  if canAutoMigrate && (clause.isInstanceOf[DeltaMergeIntoMatchedUpdateClause] ||
-                    clause.isInstanceOf[DeltaMergeIntoNotMatchedClause]) =>
-                  DeltaUpdateTable.getTargetColNameParts(
-                    resolveOrFail(unresolvedAttrib, fakeSourcePlan, s"$typ clause"),
-                    resolutionErrorMsg)
-                case e: Throwable => throw e
-              }
+            val resolvedKey = try {
+              resolveSingleExprOrFail(
+                expr = unresolvedAttrib,
+                plansToResolveExpr = Seq(target),
+                mergeClauseType = s"$typ clause")
+            } catch {
+              // Allow schema evolution for update and insert non-star when the column is not in
+              // the target.
+              case _: AnalysisException
+                if canAutoMigrate && (clause.isInstanceOf[DeltaMergeIntoMatchedUpdateClause] ||
+                  clause.isInstanceOf[DeltaMergeIntoNotMatchedClause]) =>
+                resolveSingleExprOrFail(
+                  expr = unresolvedAttrib,
+                  plansToResolveExpr = Seq(source),
+                  mergeClauseType = s"$typ clause")
+              case e: Throwable => throw e
             }
 
-            val resolvedExpr = resolveOrFail(expr, planToResolveAction, s"$typ clause")
+            val resolvedNameParts =
+              DeltaUpdateTable.getTargetColNameParts(resolvedKey, resolutionErrorMsg)
+
+            val resolvedExpr = resolveExprs(Seq(expr), plansToResolveAction).head
+            assertResolved(resolvedExpr, plansToResolveAction, s"$typ clause")
             Seq(DeltaMergeAction(resolvedNameParts, resolvedExpr, targetColNameResolved = true))
 
           case d: DeltaMergeAction =>
@@ -544,21 +561,26 @@ object DeltaMergeInto {
         }
       }
 
-      val resolvedCondition =
-        clause.condition.map(resolveOrFail(_, planToResolveAction, s"$typ condition"))
+      val resolvedCondition = clause.condition.map {
+        resolveSingleExprOrFail(_, plansToResolveAction, mergeClauseType = s"$typ condition")
+      }
       clause.makeCopy(Array(resolvedCondition, resolvedActions)).asInstanceOf[T]
     }
 
-    // Resolve everything
-    val resolvedCond = resolveOrFail(condition, merge, "search condition")
+    // We must do manual resolution as the expressions in different clauses of the MERGE have
+    // visibility of the source, the target or both.
+    val resolvedCond = resolveSingleExprOrFail(
+      expr = condition,
+      plansToResolveExpr = Seq(target, source),
+      mergeClauseType = "search condition")
     val resolvedMatchedClauses = matchedClauses.map {
-      resolveClause(_, merge)
+      resolveClause(_, plansToResolveAction = Seq(target, source))
     }
     val resolvedNotMatchedClauses = notMatchedClauses.map {
-      resolveClause(_, fakeSourcePlan)
+      resolveClause(_, plansToResolveAction = Seq(source))
     }
     val resolvedNotMatchedBySourceClauses = notMatchedBySourceClauses.map {
-      resolveClause(_, fakeTargetPlan)
+      resolveClause(_, plansToResolveAction = Seq(target))
     }
 
     val finalSchema = if (canAutoMigrate) {

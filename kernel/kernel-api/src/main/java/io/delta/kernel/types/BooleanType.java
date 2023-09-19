@@ -13,11 +13,22 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package io.delta.kernel.types;
 
-public class BooleanType extends DataType {
+import io.delta.kernel.annotation.Evolving;
+
+/**
+ * Data type representing {@code boolean} type values.
+ *
+ * @since 3.0.0
+ */
+@Evolving
+public class BooleanType extends BasePrimitiveType {
+    // TODO: Should remove the `INSTANCE` to `BOOLEAN` so that it can be static imported where
+    // needed and referred without the `BooleanType.` prefix. Same for other types.
     public static final BooleanType INSTANCE = new BooleanType();
 
-    private BooleanType() { }
+    private BooleanType() {
+        super("boolean");
+    }
 }

@@ -82,6 +82,7 @@ class Snapshot(
   with DeltaLogging {
 
   import Snapshot._
+  import DeltaLogFileIndex.COMMIT_VERSION_COLUMN
   // For implicits which re-use Encoder:
   import org.apache.spark.sql.delta.implicits._
 
@@ -92,6 +93,12 @@ class Snapshot(
 
   override def columnMappingMode: DeltaColumnMappingMode = metadata.columnMappingMode
 
+
+  private[delta] lazy val nonFileActions: Seq[Action] = {
+    Seq(protocol, metadata) ++
+      setTransactions ++
+      domainMetadata
+  }
 
   @volatile private[delta] var stateReconstructionTriggered = false
 
@@ -115,9 +122,7 @@ class Snapshot(
   }
 
   protected lazy val fileIndices: Seq[DeltaLogFileIndex] = {
-    val checkpointFileIndexes = getCheckpointProviderOpt
-      .map(_.allActionsFileIndexes())
-      .getOrElse(Nil)
+    val checkpointFileIndexes = checkpointProvider.allActionsFileIndexes()
     checkpointFileIndexes ++ deltaFileIndexOpt.toSeq
   }
 
@@ -192,8 +197,7 @@ class Snapshot(
 
   def deltaFileSizeInBytes(): Long = deltaFileIndexOpt.map(_.sizeInBytes).getOrElse(0L)
 
-  def checkpointSizeInBytes(): Long =
-    getCheckpointProviderOpt.map(_.effectiveCheckpointSizeInBytes()).getOrElse(0L)
+  def checkpointSizeInBytes(): Long = checkpointProvider.effectiveCheckpointSizeInBytes()
 
   override def metadata: Metadata = _metadata
 
@@ -210,10 +214,9 @@ class Snapshot(
     val schemaToUse = Action.logSchema(Set("protocol", "metaData"))
     fileIndices.map(deltaLog.loadIndex(_, schemaToUse))
       .reduceOption(_.union(_)).getOrElse(emptyDF)
-      .withColumn(ACTION_SORT_COL_NAME, input_file_name())
-      .select("protocol", "metaData", ACTION_SORT_COL_NAME)
+      .select("protocol", "metaData", COMMIT_VERSION_COLUMN)
       .where("protocol.minReaderVersion is not null or metaData.id is not null")
-      .as[(Protocol, Metadata, String)]
+      .as[(Protocol, Metadata, Long)]
       .collect()
       .sortBy(_._3)
       .map { case (p, m, _) => p -> m }
@@ -235,7 +238,7 @@ class Snapshot(
       // optimizer can generate a really bad plan that re-evaluates _EVERY_ field of the rewritten
       // struct(...)  projection every time we touch _ANY_ field of the rewritten struct.
       //
-      // NOTE: We sort by [[ACTION_SORT_COL_NAME]] (provided by [[loadActions]]), to ensure that
+      // NOTE: We sort by [[COMMIT_VERSION_COLUMN]] (provided by [[loadActions]]), to ensure that
       // actions are presented to InMemoryLogReplay in the ascending version order it expects.
       val ADD_PATH_CANONICAL_COL_NAME = "add_path_canonical"
       val REMOVE_PATH_CANONICAL_COL_NAME = "remove_path_canonical"
@@ -247,7 +250,7 @@ class Snapshot(
         .repartition(
           getNumPartitions,
           coalesce(col(ADD_PATH_CANONICAL_COL_NAME), col(REMOVE_PATH_CANONICAL_COL_NAME)))
-        .sortWithinPartitions(ACTION_SORT_COL_NAME)
+        .sortWithinPartitions(COMMIT_VERSION_COLUMN)
         .withColumn("add", when(
           col("add.path").isNotNull,
           struct(
@@ -281,7 +284,7 @@ class Snapshot(
    * Loads the file indices into a DataFrame that can be used for LogReplay.
    *
    * In addition to the usual nested columns provided by the SingleAction schema, it should provide
-   * two additional columns to simplify the log replay process: [[ACTION_SORT_COL_NAME]] (which,
+   * two additional columns to simplify the log replay process: [[COMMIT_VERSION_COLUMN]] (which,
    * when sorted in ascending order, will order older actions before newer ones, as required by
    * [[InMemoryLogReplay]]); and [[ADD_STATS_TO_USE_COL_NAME]] (to handle certain combinations of
    * config settings for delta.checkpoint.writeStatsAsJson and delta.checkpoint.writeStatsAsStruct).
@@ -289,7 +292,6 @@ class Snapshot(
   protected def loadActions: DataFrame = {
     fileIndices.map(deltaLog.loadIndex(_))
       .reduceOption(_.union(_)).getOrElse(emptyDF)
-      .withColumn(ACTION_SORT_COL_NAME, input_file_name())
       .withColumn(ADD_STATS_TO_USE_COL_NAME, col("add.stats"))
   }
 
@@ -309,7 +311,7 @@ class Snapshot(
     DeltaLog.minSetTransactionRetentionInterval(metadata).map(deltaLog.clock.getTimeMillis() - _)
   }
 
-  protected def getNumPartitions: Int = {
+  private[delta] def getNumPartitions: Int = {
     spark.sessionState.conf.getConf(DeltaSQLConf.DELTA_SNAPSHOT_PARTITIONS)
       .getOrElse(Snapshot.defaultNumSnapshotPartitions)
   }
@@ -327,8 +329,7 @@ class Snapshot(
     numMetadata = numOfMetadata,
     numProtocol = numOfProtocol,
     setTransactions = checksumOpt.flatMap(_.setTransactions),
-    rowIdHighWaterMark = rowIdHighWaterMarkOpt,
-    domainMetadata = checksumOpt.flatMap(_.domainMetadata),
+    domainMetadata = domainMetadatasIfKnown,
     metadata = metadata,
     protocol = protocol,
     histogramOpt = fileSizeHistogram,
@@ -364,12 +365,11 @@ class Snapshot(
     }
   }
 
-  /**
-   * Returns the [[CheckpointProvider]] for the underlying checkpoint.
-   * Returns None if the Snapshot isn't backed by a checkpoint.
-   */
-  def getCheckpointProviderOpt: Option[CheckpointProvider] =
-    logSegment.checkpointProviderOpt
+  /** The [[CheckpointProvider]] for the underlying checkpoint */
+  lazy val checkpointProvider: CheckpointProvider = logSegment.checkpointProvider match {
+    case cp: CheckpointProvider => cp
+    case o => throw new IllegalStateException(s"Unknown checkpoint provider: ${o.getClass.getName}")
+  }
 
   def redactedPath: String =
     Utils.redact(spark.sessionState.conf.stringRedactionPattern, path.toUri.toString)
@@ -410,7 +410,6 @@ class Snapshot(
 object Snapshot extends DeltaLogging {
 
   // Used by [[loadActions]] and [[stateReconstruction]]
-  val ACTION_SORT_COL_NAME = "action_sort_column"
   val ADD_STATS_TO_USE_COL_NAME = "add_stats_to_use"
 
   private val defaultNumSnapshotPartitions: Int = 50

@@ -16,6 +16,8 @@
 
 package org.apache.spark.sql.delta.util
 
+import java.util.UUID
+
 import org.apache.hadoop.fs.{FileStatus, Path}
 
 /** Helper for creating file names for specific commits / checkpoints. */
@@ -23,7 +25,7 @@ object FileNames {
 
   val deltaFileRegex = raw"(\d+)\.json".r
   val checksumFileRegex = raw"(\d+)\.crc".r
-  val checkpointFileRegex = raw"(\d+)\.checkpoint(\.(\d+)\.(\d+))?\.parquet".r
+  val checkpointFileRegex = raw"(\d+)\.checkpoint((\.\d+\.\d+)?\.parquet|\.[^.]+\.(json|parquet))".r
 
   val deltaFilePattern = deltaFileRegex.pattern
   val checksumFilePattern = checksumFileRegex.pattern
@@ -95,19 +97,24 @@ object FileNames {
   def checkpointVersion(file: FileStatus): Long = checkpointVersion(file.getPath)
 
   /**
+   * Get the version of the checkpoint, checksum or delta file. Returns None if an unexpected
+   * file type is seen.
+   */
+  def getFileVersionOpt(path: Path): Option[Long] = path match {
+    case DeltaFile(_, version) => Some(version)
+    case ChecksumFile(_, version) => Some(version)
+    case CheckpointFile(_, version) => Some(version)
+    case _ => None
+  }
+
+  /**
    * Get the version of the checkpoint, checksum or delta file. Throws an error if an unexpected
    * file type is seen. These unexpected files should be filtered out to ensure forward
    * compatibility in cases where new file types are added, but without an explicit protocol
    * upgrade.
    */
   def getFileVersion(path: Path): Long = {
-    if (isCheckpointFile(path)) {
-      checkpointVersion(path)
-    } else if (isDeltaFile(path)) {
-      deltaVersion(path)
-    } else if (isChecksumFile(path)) {
-      checksumVersion(path)
-    } else {
+    getFileVersionOpt(path).getOrElse {
       // scalastyle:off throwerror
       throw new AssertionError(
         s"Unexpected file type found in transaction log: $path")
@@ -141,4 +148,27 @@ object FileNames {
     val DELTA, CHECKPOINT, CHECKSUM, OTHER = Value
   }
 
+
+  /** File path for a new V2 Checkpoint Json file */
+  def newV2CheckpointJsonFile(path: Path, version: Long): Path =
+    new Path(path, f"$version%020d.checkpoint.${UUID.randomUUID.toString}.json")
+
+  /** File path for a new V2 Checkpoint Parquet file */
+  def newV2CheckpointParquetFile(path: Path, version: Long): Path =
+    new Path(path, f"$version%020d.checkpoint.${UUID.randomUUID.toString}.parquet")
+
+  /** File path for a V2 Checkpoint's Sidecar file */
+  def newV2CheckpointSidecarFile(
+      logPath: Path,
+      version: Long,
+      numParts: Int,
+      currentPart: Int): Path = {
+    val basePath = sidecarDirPath(logPath)
+    val uuid = UUID.randomUUID.toString
+    new Path(basePath, f"$version%020d.checkpoint.$currentPart%010d.$numParts%010d.$uuid.parquet")
+  }
+
+  val SIDECAR_SUBDIR = "_sidecars"
+  /** Returns path to the sidecar directory */
+  def sidecarDirPath(logPath: Path): Path = new Path(logPath, SIDECAR_SUBDIR)
 }

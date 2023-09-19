@@ -13,42 +13,28 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package io.delta.kernel.types;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 
-import io.delta.kernel.data.Row;
+import io.delta.kernel.annotation.Evolving;
 import io.delta.kernel.expressions.Column;
 import io.delta.kernel.utils.Tuple2;
 
+/**
+ * Struct type which contains one or more columns.
+ *
+ * @since 3.0.0
+ */
+@Evolving
 public final class StructType extends DataType {
-
-    ////////////////////////////////////////////////////////////////////////////////
-    // Static Fields / Methods
-    ////////////////////////////////////////////////////////////////////////////////
-
-    public static StructType EMPTY_INSTANCE = new StructType();
-
-    // TODO: docs
-    public static StructType fromRow(Row row) {
-        final List<Row> fields = row.getList(0);
-        return new StructType(
-            fields
-                .stream()
-                .map(StructField::fromRow)
-                .collect(Collectors.toList())
-        );
-    }
-
-    // TODO: docs
-    public static StructType READ_SCHEMA = new StructType()
-        .add("fields", new ArrayType(StructField.READ_SCHEMA, false /* contains null */ ));
-
-    ////////////////////////////////////////////////////////////////////////////////
-    // Instance Fields / Methods
-    ////////////////////////////////////////////////////////////////////////////////
 
     private final Map<String, Tuple2<StructField, Integer>> nameToFieldAndOrdinal;
     private final List<StructField> fields;
@@ -76,8 +62,11 @@ public final class StructType extends DataType {
     }
 
     public StructType add(String name, DataType dataType) {
-        return add(new StructField(name, dataType, true /* nullable */,
-            new HashMap<String, String>()));
+        return add(new StructField(name, dataType, true /* nullable */, new HashMap<>()));
+    }
+
+    public StructType add(String name, DataType dataType, boolean nullable) {
+        return add(new StructField(name, dataType, nullable, new HashMap<>()));
     }
 
     public StructType add(String name, DataType dataType, Map<String, String> metadata) {
@@ -125,35 +114,61 @@ public final class StructType extends DataType {
      */
     public Column column(int ordinal) {
         final StructField field = at(ordinal);
-        return new Column(ordinal, field.getName(), field.getDataType());
+        return new Column(field.getName());
     }
 
-    /**
-     * Creates a {@link Column} expression for the field with the given {@code fieldName}.
-     *
-     * @param fieldName the name of the {@link StructField} to create a column for
-     * @return a {@link Column} expression for the {@link StructField} with name {@code fieldName}
-     */
-    public Column column(String fieldName) {
-        Tuple2<StructField, Integer> fieldAndOrdinal = nameToFieldAndOrdinal.get(fieldName);
-        System.out.println("Created column " + fieldName + " with ordinal " + fieldAndOrdinal._2);
-        return new Column(fieldAndOrdinal._2, fieldName, fieldAndOrdinal._1.getDataType());
+    @Override
+    public boolean equivalent(DataType dataType) {
+        if (!(dataType instanceof StructType)) {
+            return false;
+        }
+
+        StructType otherType = ((StructType) dataType);
+        return otherType.length() == length() &&
+            IntStream.range(0, length())
+                .mapToObj(i ->
+                    otherType.at(i).getDataType().equivalent(at(i).getDataType()))
+                .allMatch(result -> result);
     }
 
     @Override
     public String toString() {
         return String.format(
-            "%s(%s)",
-            getClass().getSimpleName(),
+            "struct(%s)",
             fields.stream().map(StructField::toString).collect(Collectors.joining(", "))
         );
     }
 
-    /**
-     * @return a readable indented tree representation of this {@code StructType}
-     *         and all of its nested elements
-     */
-    public String treeString() {
-        return "TODO";
+    @Override
+    public String toJson() {
+        String fieldsAsJson = fields.stream()
+            .map(e -> e.toJson())
+            .collect(Collectors.joining(",\n"));
+
+        return String.format(
+            "{\n" +
+                "  \"type\" : \"struct\",\n" +
+                "  \"fields\" : [ %s ]\n" +
+                "}",
+            fieldsAsJson);
+    }
+
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) {
+            return true;
+        }
+        if (o == null || getClass() != o.getClass()) {
+            return false;
+        }
+        StructType that = (StructType) o;
+        return nameToFieldAndOrdinal.equals(that.nameToFieldAndOrdinal) &&
+            fields.equals(that.fields) &&
+            fieldNames.equals(that.fieldNames);
+    }
+
+    @Override
+    public int hashCode() {
+        return Objects.hash(nameToFieldAndOrdinal, fields, fieldNames);
     }
 }

@@ -16,10 +16,11 @@
 
 package org.apache.spark.sql.delta.commands
 
+import org.apache.spark.sql.delta.metric.IncrementMetric
 import org.apache.spark.sql.delta._
 import org.apache.spark.sql.delta.actions.{Action, AddCDCFile, AddFile, FileAction}
 import org.apache.spark.sql.delta.commands.DeleteCommand.{rewritingFilesMsg, FINDING_TOUCHED_FILES_MSG}
-import org.apache.spark.sql.delta.commands.MergeIntoCommand.totalBytesAndDistinctPartitionValues
+import org.apache.spark.sql.delta.commands.MergeIntoCommandBase.totalBytesAndDistinctPartitionValues
 import org.apache.spark.sql.delta.files.TahoeBatchFileIndex
 import org.apache.spark.sql.delta.sources.DeltaSQLConf
 import com.fasterxml.jackson.databind.annotation.JsonDeserialize
@@ -28,6 +29,7 @@ import org.apache.spark.SparkContext
 import org.apache.spark.sql.{Column, DataFrame, Dataset, Row, SparkSession}
 import org.apache.spark.sql.catalyst.analysis.EliminateSubqueryAliases
 import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference, EqualNullSafe, Expression, If, Literal, Not}
+import org.apache.spark.sql.catalyst.expressions.Literal.TrueLiteral
 import org.apache.spark.sql.catalyst.plans.QueryPlan
 import org.apache.spark.sql.catalyst.plans.logical.{DeltaDelete, LogicalPlan}
 import org.apache.spark.sql.execution.command.LeafRunnableCommand
@@ -61,7 +63,10 @@ trait DeleteCommandMetrics { self: LeafRunnableCommand =>
       createTimingMetric(sc, "time taken to rewrite the matched files"),
     "numAddedChangeFiles" -> createMetric(sc, "number of change data capture files generated"),
     "changeFileBytes" -> createMetric(sc, "total size of change data capture files generated"),
-    "numTouchedRows" -> createMetric(sc, "number of rows touched")
+    "numTouchedRows" -> createMetric(sc, "number of rows touched"),
+    "numDeletionVectorsAdded" -> createMetric(sc, "number of deletion vectors added"),
+    "numDeletionVectorsRemoved" -> createMetric(sc, "number of deletion vectors removed"),
+    "numDeletionVectorsUpdated" -> createMetric(sc, "number of deletion vectors updated")
   )
 
   def getDeletedRowsFromAddFilesAndUpdateMetrics(files: Seq[AddFile]) : Option[Long] = {
@@ -158,6 +163,9 @@ case class DeleteCommand(
     var numPartitionsAddedTo: Option[Long] = None
     var numDeletedRows: Option[Long] = None
     var numCopiedRows: Option[Long] = None
+    var numDeletionVectorsAdded: Long = 0
+    var numDeletionVectorsRemoved: Long = 0
+    var numDeletionVectorsUpdated: Long = 0
 
     val startTime = System.nanoTime()
     val numFilesTotal = txn.snapshot.numOfFiles
@@ -169,6 +177,7 @@ case class DeleteCommand(
         val allFiles = txn.filterFiles(Nil, keepNumRecords = reportRowLevelMetrics)
 
         numRemovedFiles = allFiles.size
+        numDeletionVectorsRemoved = allFiles.count(_.deletionVector != null)
         scanTimeMs = (System.nanoTime() - startTime) / 1000 / 1000
         val (numBytes, numPartitions) = totalBytesAndDistinctPartitionValues(allFiles)
         numRemovedBytes = numBytes
@@ -205,6 +214,7 @@ case class DeleteCommand(
           numRemovedFiles = candidateFiles.size
           numRemovedBytes = candidateFiles.map(_.size).sum
           numFilesAfterSkipping = candidateFiles.size
+          numDeletionVectorsRemoved = candidateFiles.count(_.deletionVector != null)
           val (numCandidateBytes, numCandidatePartitions) =
             totalBytesAndDistinctPartitionValues(candidateFiles)
           numBytesAfterSkipping = numCandidateBytes
@@ -265,6 +275,9 @@ case class DeleteCommand(
                 touchedFiles,
                 txn.snapshot)
               metrics("numDeletedRows").set(metricMap("numDeletedRows"))
+              numDeletionVectorsAdded = metricMap("numDeletionVectorsAdded")
+              numDeletionVectorsRemoved = metricMap("numDeletionVectorsRemoved")
+              numDeletionVectorsUpdated = metricMap("numDeletionVectorsUpdated")
               numRemovedFiles = metricMap("numRemovedFiles")
               actions
             } else {
@@ -275,11 +288,7 @@ case class DeleteCommand(
             // that only involves the affected files instead of all files.
             val newTarget = DeltaTableUtils.replaceFileIndex(target, fileIndex)
             val data = Dataset.ofRows(sparkSession, newTarget)
-            val deletedRowCount = metrics("numDeletedRows")
-            val deletedRowUdf = DeltaUDF.boolean { () =>
-              deletedRowCount += 1
-              true
-            }.asNondeterministic()
+            val incrDeletedCountExpr = IncrementMetric(TrueLiteral, metrics("numDeletedRows"))
             val filesToRewrite =
               withStatusCode("DELTA", FINDING_TOUCHED_FILES_MSG) {
                 if (candidateFiles.isEmpty) {
@@ -287,7 +296,7 @@ case class DeleteCommand(
                 } else {
                   data.filter(new Column(cond))
                     .select(input_file_name())
-                    .filter(deletedRowUdf())
+                    .filter(new Column(incrDeletedCountExpr))
                     .distinct()
                     .as[String]
                     .collect()
@@ -335,7 +344,7 @@ case class DeleteCommand(
               numDeletedRows = Some(metrics("numDeletedRows").value)
               numCopiedRows =
                 Some(metrics("numTouchedRows").value - metrics("numDeletedRows").value)
-
+              numDeletionVectorsRemoved = removedFiles.count(_.deletionVector != null)
               val operationTimestamp = System.currentTimeMillis()
               removeFilesFromPaths(
                 deltaLog, nameToAddFileMap, filesToRewrite, operationTimestamp) ++ rewrittenActions
@@ -357,6 +366,9 @@ case class DeleteCommand(
     metrics("numBytesBeforeSkipping").set(numBytesBeforeSkipping)
     metrics("numFilesAfterSkipping").set(numFilesAfterSkipping)
     metrics("numBytesAfterSkipping").set(numBytesAfterSkipping)
+    metrics("numDeletionVectorsAdded").set(numDeletionVectorsAdded)
+    metrics("numDeletionVectorsRemoved").set(numDeletionVectorsRemoved)
+    metrics("numDeletionVectorsUpdated").set(numDeletionVectorsUpdated)
     numPartitionsAfterSkipping.foreach(metrics("numPartitionsAfterSkipping").set)
     numPartitionsAddedTo.foreach(metrics("numPartitionsAddedTo").set)
     numPartitionsRemovedFrom.foreach(metrics("numPartitionsRemovedFrom").set)
@@ -388,7 +400,10 @@ case class DeleteCommand(
         numRemovedBytes,
         changeFileBytes = changeFileBytes,
         scanTimeMs,
-        rewriteTimeMs)
+        rewriteTimeMs,
+        numDeletionVectorsAdded,
+        numDeletionVectorsRemoved,
+        numDeletionVectorsUpdated)
     )
 
     if (deleteActions.nonEmpty) {
@@ -409,11 +424,7 @@ case class DeleteCommand(
     val shouldWriteCdc = DeltaConfigs.CHANGE_DATA_FEED.fromMetaData(txn.metadata)
 
     // number of total rows that we have seen / are either copying or deleting (sum of both).
-    val numTouchedRows = metrics("numTouchedRows")
-    val numTouchedRowsUdf = DeltaUDF.boolean { () =>
-      numTouchedRows += 1
-      true
-    }.asNondeterministic()
+    val incrTouchedCountExpr = IncrementMetric(TrueLiteral, metrics("numTouchedRows"))
 
     withStatusCode(
       "DELTA", rewritingFilesMsg(numFilesToRewrite)) {
@@ -425,14 +436,14 @@ case class DeleteCommand(
         // as table data, while all rows which don't match are removed from the rewritten table data
         // but do get included in the output as CDC events.
         baseData
-          .filter(numTouchedRowsUdf())
+          .filter(new Column(incrTouchedCountExpr))
           .withColumn(
             CDC_TYPE_COLUMN_NAME,
             new Column(If(filterCondition, CDC_TYPE_NOT_CDC, CDC_TYPE_DELETE))
           )
       } else {
         baseData
-          .filter(numTouchedRowsUdf())
+          .filter(new Column(incrTouchedCountExpr))
           .filter(new Column(filterCondition))
       }
 
@@ -489,6 +500,9 @@ object DeleteCommand {
  * @param changeFileBytes: total size of change files generated
  * @param scanTimeMs: how long did finding take
  * @param rewriteTimeMs: how long did rewriting take
+ * @param numDeletionVectorsAdded: how many deletion vectors were added
+ * @param numDeletionVectorsRemoved: how many deletion vectors were removed
+ * @param numDeletionVectorsUpdated: how many deletion vectors were updated
  *
  * @note All the time units are milliseconds.
  */
@@ -515,5 +529,8 @@ case class DeleteMetric(
     numBytesRemoved: Long,
     changeFileBytes: Long,
     scanTimeMs: Long,
-    rewriteTimeMs: Long
+    rewriteTimeMs: Long,
+    numDeletionVectorsAdded: Long,
+    numDeletionVectorsRemoved: Long,
+    numDeletionVectorsUpdated: Long
 )

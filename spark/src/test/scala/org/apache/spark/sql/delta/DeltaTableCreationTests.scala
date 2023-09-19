@@ -45,7 +45,8 @@ import org.apache.spark.util.Utils
 
 trait DeltaTableCreationTests
   extends QueryTest
-  with SharedSparkSession  with DeltaColumnMappingTestUtils {
+  with SharedSparkSession
+  with DeltaColumnMappingTestUtils {
 
   import testImplicits._
 
@@ -598,7 +599,7 @@ trait DeltaTableCreationTests
               """.stripMargin)
           }
 
-          intercept[AnalysisException] {
+          intercept[ParseException] {
             sql(
               s"""CREATE TABLE delta_test(
                  |  a string,

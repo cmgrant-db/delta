@@ -16,10 +16,9 @@
 
 package org.apache.spark.sql.delta.sources
 
-import org.apache.spark.sql.delta.actions.{Action, AddCDCFile, AddFile, CommitInfo, FileAction, Metadata, Protocol, RemoveFile, RowIdHighWaterMark, SetTransaction}
+import org.apache.spark.sql.delta.actions._
 import org.apache.spark.sql.delta.actions.DomainMetadata
 import org.apache.spark.sql.delta.commands.cdc.CDCReader
-import org.apache.spark.sql.delta.storage.ClosableIterator._
 
 import org.apache.spark.sql.DataFrame
 
@@ -80,8 +79,8 @@ trait DeltaSourceCDCSupport { self: DeltaSource =>
     }
 
     private def isSchemaChangeIndexedFile(indexedFile: IndexedFile): Boolean = {
-      indexedFile.index == DeltaSourceOffset.SCHEMA_CHANGE_INDEX ||
-        indexedFile.index == DeltaSourceOffset.POST_SCHEMA_CHANGE_INDEX
+      indexedFile.index == DeltaSourceOffset.METADATA_CHANGE_INDEX ||
+        indexedFile.index == DeltaSourceOffset.POST_METADATA_CHANGE_INDEX
     }
 
     private def isValidIndexedFile(
@@ -149,13 +148,31 @@ trait DeltaSourceCDCSupport { self: DeltaSource =>
           // We allow entries with no file actions and index as [[DeltaSourceOffset.BASE_INDEX]]
           // that are used primarily to update latest offset when no other
           // file action based entries are present.
-          fileActions.filter(indexedFile => hasAddsOrRemoves(indexedFile) ||
-            hasNoFileActionAndStartIndex(indexedFile))
-            .filter(
-              isValidIndexedFile(_, fromVersion, fromIndex, endOffset)
-            ).takeWhile { indexedFile =>
-            admissionControl.admit(Option(indexedFile.getFileAction))
-          }.toIterator
+          val filteredFiles = fileActions
+            .filter { indexedFile =>
+              hasAddsOrRemoves(indexedFile) || hasNoFileActionAndStartIndex(indexedFile)
+            }
+            .filter(isValidIndexedFile(_, fromVersion, fromIndex, endOffset))
+          val filteredFileActions = filteredFiles.flatMap(f => Option(f.getFileAction))
+          val hasDeletionVectors = filteredFileActions.exists {
+            case add: AddFile => add.deletionVector != null
+            case remove: RemoveFile => remove.deletionVector != null
+            case _ => false
+          }
+          if (hasDeletionVectors) {
+            // We cannot split up add/remove pairs with Deletion Vectors, because we will get the
+            // wrong result.
+            // So in this case we behave as above with CDC files and either admit all or none.
+            if (admissionControl.admit(filteredFileActions)) {
+              filteredFiles.toIterator
+            } else {
+              Iterator()
+            }
+          } else {
+            filteredFiles.takeWhile { indexedFile =>
+              admissionControl.admit(Option(indexedFile.getFileAction))
+            }.toIterator
+          }
         }
       }
     }
@@ -189,7 +206,7 @@ trait DeltaSourceCDCSupport { self: DeltaSource =>
       }
 
     val cdcInfo = CDCReader.changesToDF(
-      readSchemaSnapshotDescriptor,
+      readSnapshotDescriptor,
       startVersion,
       endOffset.reservoirVersion,
       groupedFileActions,
@@ -219,18 +236,18 @@ trait DeltaSourceCDCSupport { self: DeltaSource =>
     def filterAndIndexDeltaLogs(startVersion: Long): Iterator[(Long, IndexedChangeFileSeq)] = {
       // TODO: handle the case when failOnDataLoss = false and we are missing change log files
       //    in that case, we need to recompute the start snapshot and evolve the schema if needed
-      require(options.failOnDataLoss || !trackingSchemaChange,
+      require(options.failOnDataLoss || !trackingMetadataChange,
         "Using schema from schema tracking log cannot tolerate missing commit files.")
       deltaLog.getChanges(startVersion, options.failOnDataLoss).map { case (version, actions) =>
         // skipIndexedFile must be applied after creating IndexedFile so that
         // IndexedFile.index is consistent across all versions.
-        val (fileActions, skipIndexedFile, metadataOpt) =
+        val (fileActions, skipIndexedFile, metadataOpt, protocolOpt) =
           filterCDCActions(
             actions, version, fromVersion, endOffset.map(_.reservoirVersion),
-            verifyMetadataAction && !trackingSchemaChange)
+            verifyMetadataAction && !trackingMetadataChange)
         val itr =
             Iterator(IndexedFile(version, DeltaSourceOffset.BASE_INDEX, null)) ++
-              getSchemaChangeIndexedFileIterator(metadataOpt, version) ++
+              getMetadataOrProtocolChangeIndexedFileIterator(metadataOpt, protocolOpt, version) ++
               fileActions
             .zipWithIndex.map {
               case (action: AddFile, index) =>
@@ -282,7 +299,6 @@ trait DeltaSourceCDCSupport { self: DeltaSource =>
     } else {
       filterAndIndexDeltaLogs(fromVersion)
     }
-
     // In this case, filterFiles will consume the available capacity. We use takeWhile
     // to stop the iteration when we reach the limit which will save us from reading
     // unnecessary log files.
@@ -307,12 +323,31 @@ trait DeltaSourceCDCSupport { self: DeltaSource =>
       version: Long,
       batchStartVersion: Long,
       batchEndVersionOpt: Option[Long] = None,
-      verifyMetadataAction: Boolean = true): (Seq[FileAction], Boolean, Option[Metadata]) = {
+      verifyMetadataAction: Boolean = true
+  ): (Seq[FileAction], Boolean, Option[Metadata], Option[Protocol]) = {
     var shouldSkipIndexedFile = false
     var metadataAction: Option[Metadata] = None
+    var protocolAction: Option[Protocol] = None
+    def checkAndCacheMetadata(m: Metadata): Unit = {
+      if (verifyMetadataAction) {
+        checkReadIncompatibleSchemaChanges(m, version, batchStartVersion, batchEndVersionOpt)
+      }
+      assert(metadataAction.isEmpty,
+        "Should not encounter two metadata actions in the same commit")
+      metadataAction = Some(m)
+    }
+
     if (actions.exists(_.isInstanceOf[AddCDCFile])) {
-      (actions.filter(_.isInstanceOf[AddCDCFile]).asInstanceOf[Seq[FileAction]],
-       shouldSkipIndexedFile, metadataAction)
+      (actions.filter {
+        case _: AddCDCFile => true
+        case m: Metadata =>
+          checkAndCacheMetadata(m)
+          false
+        case p: Protocol =>
+          protocolAction = Some(p)
+          false
+        case _ => false
+      }.asInstanceOf[Seq[FileAction]], shouldSkipIndexedFile, metadataAction, protocolAction)
     } else {
       (actions.filter {
         case a: AddFile =>
@@ -320,24 +355,22 @@ trait DeltaSourceCDCSupport { self: DeltaSource =>
         case r: RemoveFile =>
           r.dataChange
         case m: Metadata =>
-          if (verifyMetadataAction) {
-            checkReadIncompatibleSchemaChanges(m, version, batchStartVersion, batchEndVersionOpt)
-          }
-          assert(metadataAction.isEmpty,
-            "Should not encounter two metadata actions in the same commit")
-          metadataAction = Some(m)
+          checkAndCacheMetadata(m)
           false
         case protocol: Protocol =>
           deltaLog.protocolRead(protocol)
+          assert(protocolAction.isEmpty,
+            "Should not encounter two protocol actions in the same commit")
+          protocolAction = Some(protocol)
           false
         case commitInfo: CommitInfo =>
           shouldSkipIndexedFile = CDCReader.shouldSkipFileActionsInCommit(commitInfo)
           false
-        case _: AddCDCFile | _: RowIdHighWaterMark | _: SetTransaction | _: DomainMetadata =>
+        case _: AddCDCFile | _: SetTransaction | _: DomainMetadata =>
           false
         case null => // Some crazy future feature. Ignore
           false
-      }.asInstanceOf[Seq[FileAction]], shouldSkipIndexedFile, metadataAction)
+      }.asInstanceOf[Seq[FileAction]], shouldSkipIndexedFile, metadataAction, protocolAction)
     }
   }
 }

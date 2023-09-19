@@ -16,9 +16,10 @@
 
 package org.apache.spark.sql.delta.rowid
 
-import org.apache.spark.sql.delta.{DeltaConfigs, DeltaIllegalStateException, DeltaLog, RowId}
+import org.apache.spark.sql.delta.{DeltaConfigs, DeltaIllegalStateException, DeltaLog, RowId, Serializable, SnapshotIsolation, WriteSerializable}
 import org.apache.spark.sql.delta.DeltaOperations.ManualUpdate
-import org.apache.spark.sql.delta.actions.RowIdHighWaterMark
+import org.apache.spark.sql.delta.RowId.RowTrackingMetadataDomain
+import org.apache.spark.sql.delta.actions.CommitInfo
 import org.apache.spark.sql.delta.actions.TableFeatureProtocolUtils.TABLE_FEATURES_MIN_WRITER_VERSION
 import org.apache.spark.sql.delta.sources.DeltaSQLConf
 import org.apache.spark.sql.delta.util.FileNames
@@ -44,9 +45,9 @@ class RowIdSuite extends QueryTest
              |'$rowTrackingFeatureName' = 'supported',
              |'delta.minWriterVersion' = $TABLE_FEATURES_MIN_WRITER_VERSION)""".stripMargin)
 
-        val log = DeltaLog.forTable(spark, TableIdentifier("tbl"))
-        assert(RowId.isSupported(log.update().protocol))
-        assert(!RowId.isEnabled(log.update().protocol, log.update().metadata))
+        val (log, snapshot) = DeltaLog.forTableWithSnapshot(spark, TableIdentifier("tbl"))
+        assert(RowId.isSupported(snapshot.protocol))
+        assert(!RowId.isEnabled(snapshot.protocol, snapshot.metadata))
       }
     }
   }
@@ -174,7 +175,7 @@ class RowIdSuite extends QueryTest
           .write.mode("append").format("delta").save(dir.getAbsolutePath)
         assertHighWatermarkIsCorrectAfterUpdate(
           log,
-          highWatermarkBeforeUpdate = highWatermarkAfterRestore.get.highWaterMark,
+          highWatermarkBeforeUpdate = highWatermarkAfterRestore.get,
           expectedNumRecordsWritten = 10)
         assertRowIdsDoNotOverlap(log)
         val highWatermarkWithNewData = RowId.extractHighWatermark(log.update())
@@ -228,10 +229,37 @@ class RowIdSuite extends QueryTest
         val log = DeltaLog.forTable(spark, dir)
 
         val exception = intercept[IllegalStateException] {
-          log.startTransaction().commit(Seq(RowIdHighWaterMark(highWaterMark = 9001)), ManualUpdate)
+          log.startTransaction().commit(
+            Seq(RowTrackingMetadataDomain(rowIdHighWaterMark = 9001).toDomainMetadata),
+            ManualUpdate)
         }
         assert(exception.getMessage.contains(
           "Manually setting the Row ID high water mark is not allowed"))
+      }
+    }
+  }
+
+  for (prevIsolationLevel <- Seq(
+    Serializable))
+  test(s"Maintenance operations can downgrade to snapshot isolation, " +
+    s"previousIsolationLevel = $prevIsolationLevel") {
+    withTable("table") {
+      withSQLConf(
+        DeltaConfigs.ROW_TRACKING_ENABLED.defaultTablePropertyKey -> "true",
+        DeltaConfigs.ISOLATION_LEVEL.defaultTablePropertyKey -> prevIsolationLevel.toString) {
+        // Create two files that will be picked up by OPTIMIZE
+        spark.range(10).repartition(2).write.format("delta").saveAsTable("table")
+        val (log, snapshot) = DeltaLog.forTableWithSnapshot(spark, TableIdentifier("table"))
+        val versionBeforeOptimize = snapshot.version
+
+        spark.sql("OPTIMIZE table").collect()
+
+        val commitInfos = log.getChanges(versionBeforeOptimize + 1).flatMap(_._2).flatMap {
+          case commitInfo: CommitInfo => Some(commitInfo)
+          case _ => None
+        }.toList
+        assert(commitInfos.size == 1)
+        assert(commitInfos.forall(_.isolationLevel.get == SnapshotIsolation.toString))
       }
     }
   }
@@ -241,8 +269,8 @@ class RowIdSuite extends QueryTest
       withTable("tbl") {
         spark.range(10).write.format("delta").saveAsTable("tbl")
 
-        val log = DeltaLog.forTable(spark, TableIdentifier("tbl"))
-        assert(!RowId.isEnabled(log.update().protocol, log.update().metadata))
+        val (log, snapshot) = DeltaLog.forTableWithSnapshot(spark, TableIdentifier("tbl"))
+        assert(!RowId.isEnabled(snapshot.protocol, snapshot.metadata))
 
         val err = intercept[UnsupportedOperationException] {
           sql(s"ALTER TABLE tbl " +

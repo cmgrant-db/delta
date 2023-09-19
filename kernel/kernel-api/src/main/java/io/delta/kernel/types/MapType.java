@@ -13,12 +13,19 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package io.delta.kernel.types;
 
-public class MapType extends DataType {
+import java.util.Objects;
 
-    public static final MapType EMPTY_INSTANCE = new MapType(null, null, false);
+import io.delta.kernel.annotation.Evolving;
+
+/**
+ * Data type representing a {@code map} type.
+ *
+ * @since 3.0.0
+ */
+@Evolving
+public class MapType extends DataType {
 
     private final DataType keyType;
     private final DataType valueType;
@@ -40,5 +47,46 @@ public class MapType extends DataType {
 
     public boolean isValueContainsNull() {
         return valueContainsNull;
+    }
+
+    @Override
+    public boolean equivalent(DataType dataType) {
+        return dataType instanceof MapType &&
+            ((MapType) dataType).getKeyType().equivalent(keyType) &&
+            ((MapType) dataType).getValueType().equivalent(valueType) &&
+            ((MapType) dataType).valueContainsNull == valueContainsNull;
+    }
+
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) {
+            return true;
+        }
+        if (o == null || getClass() != o.getClass()) {
+            return false;
+        }
+        MapType mapType = (MapType) o;
+        return valueContainsNull == mapType.valueContainsNull && keyType.equals(mapType.keyType) &&
+            valueType.equals(mapType.valueType);
+    }
+
+    @Override
+    public int hashCode() {
+        return Objects.hash(keyType, valueType, valueContainsNull);
+    }
+
+    @Override
+    public String toJson() {
+        return String.format("{" +
+            "\"type\": \"map\"," +
+            "\"keyType\": %s," +
+            "\"valueType\": %s," +
+            "\"valueContainsNull\": %s" +
+            "}", keyType.toJson(), valueType.toJson(), valueContainsNull);
+    }
+
+    @Override
+    public String toString() {
+        return String.format("map[%s, %s]", keyType, valueType);
     }
 }
