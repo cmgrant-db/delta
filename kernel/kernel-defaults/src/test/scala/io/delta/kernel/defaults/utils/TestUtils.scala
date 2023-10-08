@@ -24,8 +24,10 @@ import scala.collection.mutable.ArrayBuffer
 
 import io.delta.kernel.{Scan, Snapshot, Table}
 import io.delta.kernel.client.TableClient
-import io.delta.kernel.data.Row
+import io.delta.kernel.data.{ColumnVector, MapValue, Row}
 import io.delta.kernel.defaults.client.DefaultTableClient
+import io.delta.kernel.defaults.internal.data.vector.DefaultGenericVector
+import io.delta.kernel.expressions.Predicate
 import io.delta.kernel.types._
 import io.delta.kernel.utils.CloseableIterator
 import org.apache.hadoop.conf.Configuration
@@ -79,6 +81,8 @@ trait TestUtils extends Assertions {
   def readSnapshot(
     snapshot: Snapshot,
     readSchema: StructType = null,
+    filter: Predicate = null,
+    expectedRemainingFilter: Predicate = null,
     tableClient: TableClient = defaultTableClient): Seq[Row] = {
 
     val result = ArrayBuffer[Row]()
@@ -89,7 +93,17 @@ trait TestUtils extends Assertions {
       scanBuilder = scanBuilder.withReadSchema(tableClient, readSchema)
     }
 
+    if (filter != null) {
+      scanBuilder = scanBuilder.withFilter(tableClient, filter)
+    }
+
     val scan = scanBuilder.build()
+
+    if (filter != null) {
+      val actRemainingPredicate = scan.getRemainingFilter()
+      assert(
+        actRemainingPredicate.toString === Optional.ofNullable(expectedRemainingFilter).toString)
+    }
 
     val scanState = scan.getScanState(tableClient);
     val fileIter = scan.getScanFiles(tableClient)
@@ -175,14 +189,18 @@ trait TestUtils extends Assertions {
    * @param readCols subset of columns to read; if null then all columns will be read
    * @param tableClient table client to use to read the table
    * @param expectedSchema expected schema to check for; if null then no check is performed
+   * @param filter Filter to select a subset of rows form the table
+   * @param expectedRemainingFilter Remaining predicate out of the `filter` that is not enforced
+   *                                by Kernel.
    */
   def checkTable(
     path: String,
     expectedAnswer: Seq[TestRow],
     readCols: Seq[String] = null,
     tableClient: TableClient = defaultTableClient,
-    expectedSchema: StructType = null
-    // filter
+    expectedSchema: StructType = null,
+    filter: Predicate = null,
+    expectedRemainingFilter: Predicate = null
     // version
   ): Unit = {
 
@@ -206,7 +224,7 @@ trait TestUtils extends Assertions {
       )
     }
 
-    val result = readSnapshot(snapshot, readSchema = readSchema, tableClient = tableClient)
+    val result = readSnapshot(snapshot, readSchema, filter, expectedRemainingFilter, tableClient)
     checkAnswer(result, expectedAnswer)
   }
 
@@ -299,5 +317,35 @@ trait TestUtils extends Assertions {
     try f(tempDir) finally {
       FileUtils.deleteDirectory(tempDir)
     }
+  }
+
+  /**
+   * Builds a MapType ColumnVector from a sequence of maps.
+   */
+  def buildMapVector(mapValues: Seq[Map[AnyRef, AnyRef]], dataType: MapType): ColumnVector = {
+    val keyType = dataType.getKeyType
+    val valueType = dataType.getValueType
+
+    def getMapValue(map: Map[AnyRef, AnyRef]): MapValue = {
+      if (map == null) {
+        null
+      } else {
+        val (keys, values) = map.unzip
+        new MapValue() {
+          override def getSize: Int = map.size
+
+          override def getKeys = new DefaultGenericVector(
+            keyType, keys.toArray)
+
+          override def getValues = new DefaultGenericVector(
+            valueType, values.toArray)
+        }
+      }
+    }
+
+    new DefaultGenericVector(
+      dataType,
+      mapValues.map(getMapValue).toArray
+    )
   }
 }

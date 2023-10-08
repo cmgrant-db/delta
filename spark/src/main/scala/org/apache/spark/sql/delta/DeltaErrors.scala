@@ -38,6 +38,7 @@ import org.json4s.JValue
 
 import org.apache.spark.{SparkConf, SparkEnv, SparkException}
 import org.apache.spark.sql.{AnalysisException, SparkSession}
+import org.apache.spark.sql.catalyst.ExtendedAnalysisException
 import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.analysis.UnresolvedAttribute
 import org.apache.spark.sql.catalyst.catalog.CatalogTable
@@ -243,7 +244,7 @@ trait DeltaErrorsBase
       startPosition: Option[Int] = None,
       plan: Option[LogicalPlan] = None,
       cause: Option[Throwable] = None): AnalysisException = {
-    new AnalysisException(msg, line, startPosition, plan, cause)
+    new ExtendedAnalysisException(msg, line, startPosition, plan, cause)
   }
 
   def notNullColumnMissingException(constraint: Constraints.NotNull): Throwable = {
@@ -2715,11 +2716,6 @@ trait DeltaErrorsBase
       cause = Some(cause))
   }
 
-  def showColumnsWithConflictDatabasesError(db: String, tableID: TableIdentifier): Throwable = {
-    new AnalysisException(
-      s"SHOW COLUMNS with conflicting databases: '$db' != '${tableID.database.get}'")
-  }
-
   def unsupportedDeltaTableForPathHadoopConf(unsupportedOptions: Map[String, String]): Throwable = {
     new DeltaIllegalArgumentException(
       errorClass = "DELTA_TABLE_FOR_PATH_UNSUPPORTED_HADOOP_CONF",
@@ -2877,6 +2873,13 @@ trait DeltaErrorsBase
       errorClass = "DELTA_CANNOT_RECONSTRUCT_PATH_FROM_URI",
       messageParameters = Array(uri))
 
+  def deletionVectorCardinalityMismatch(): Throwable = {
+    new DeltaChecksumException(
+      errorClass = "DELTA_DELETION_VECTOR_CARDINALITY_MISMATCH",
+      messageParameters = Array.empty,
+      pos = 0
+    )
+  }
 
   def deletionVectorSizeMismatch(): Throwable = {
     new DeltaChecksumException(

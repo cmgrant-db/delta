@@ -17,20 +17,24 @@ package io.delta.kernel.defaults.internal.expressions
 
 import java.lang.{Boolean => BooleanJ}
 import java.math.{BigDecimal => BigDecimalJ}
+import java.sql.Date
 import java.util
+import java.util.Optional
 
-import io.delta.kernel.data.{ColumnarBatch, ColumnVector}
+import org.scalatest.funsuite.AnyFunSuite
+import io.delta.kernel.data.{ColumnarBatch, ColumnVector, MapValue}
 import io.delta.kernel.defaults.internal.data.DefaultColumnarBatch
+import io.delta.kernel.defaults.internal.data.vector.{DefaultIntVector, DefaultStructVector}
+import io.delta.kernel.defaults.utils.DefaultKernelTestUtils.getValueAsObject
 import io.delta.kernel.defaults.utils.TestUtils
-import io.delta.kernel.defaults.internal.data.vector.VectorUtils.getValueAsObject
 import io.delta.kernel.expressions._
 import io.delta.kernel.expressions.AlwaysFalse.ALWAYS_FALSE
 import io.delta.kernel.expressions.AlwaysTrue.ALWAYS_TRUE
 import io.delta.kernel.expressions.Literal._
+import io.delta.kernel.internal.util.InternalUtils
 import io.delta.kernel.types._
-import org.scalatest.funsuite.AnyFunSuite
 
-class DefaultExpressionEvaluatorSuite extends AnyFunSuite with TestUtils {
+class DefaultExpressionEvaluatorSuite extends AnyFunSuite with ExpressionSuiteBase {
   test("evaluate expression: literal") {
     val testLiterals = Seq(
       Literal.ofBoolean(true),
@@ -115,6 +119,60 @@ class DefaultExpressionEvaluatorSuite extends AnyFunSuite with TestUtils {
     }
   }
 
+  test("evaluate expression: nested column reference") {
+    val col3Type = IntegerType.INSTANCE
+    val col2Type = new StructType().add("col3", col3Type)
+    val col1Type = new StructType().add("col2", col2Type)
+    val batchSchema = new StructType().add("col1", col1Type)
+
+    val numRows = 5
+    val col3Nullability = Seq(false, true, false, true, false).toArray
+    val col3Values = Seq(27, 24, 29, 100, 125).toArray
+    val col3Vector =
+      new DefaultIntVector(col3Type, numRows, Optional.of(col3Nullability), col3Values)
+
+    val col2Nullability = Seq(false, true, true, true, false).toArray
+    val col2Vector =
+      new DefaultStructVector(numRows, col2Type, Optional.of(col2Nullability), Array(col3Vector))
+
+    val col1Nullability = Seq(false, false, false, true, false).toArray
+    val col1Vector =
+      new DefaultStructVector(numRows, col1Type, Optional.of(col1Nullability), Array(col2Vector))
+
+    val batch = new DefaultColumnarBatch(numRows, batchSchema, Array(col1Vector))
+
+    def assertTypeAndNullability(
+      actVector: ColumnVector, expType: DataType, expNullability: Array[Boolean]): Unit = {
+      assert(actVector.getDataType === expType)
+      assert(actVector.getSize === numRows)
+      Seq.range(0, numRows).foreach { rowId =>
+        assert(actVector.isNullAt(rowId) === expNullability(rowId))
+      }
+    }
+
+    val col3Ref = new Column(Array("col1", "col2", "col3"))
+    val col3RefResult = evaluator(batchSchema, col3Ref, col3Type).eval(batch)
+    assertTypeAndNullability(col3RefResult, col3Type, col3Nullability);
+    Seq.range(0, numRows).foreach { rowId =>
+      assert(col3RefResult.getInt(rowId) === col3Values(rowId))
+    }
+
+    val col2Ref = new Column(Array("col1", "col2"))
+    val col2RefResult = evaluator(batchSchema, col2Ref, col2Type).eval(batch)
+    assertTypeAndNullability(col2RefResult, col2Type, col2Nullability)
+
+    val col1Ref = new Column(Array("col1"))
+    val col1RefResult = evaluator(batchSchema, col1Ref, col1Type).eval(batch)
+    assertTypeAndNullability(col1RefResult, col1Type, col1Nullability)
+
+    // try to reference non-existent nested column
+    val colNotValid = new Column(Array("col1", "colX`X"))
+    val ex = intercept[IllegalArgumentException] {
+      evaluator(batchSchema, colNotValid, col1Type).eval(batch)
+    }
+    assert(ex.getMessage.contains("column(`col1`.`colX``X`) doesn't exist in input data schema"))
+  }
+
   test("evaluate expression: always true, always false") {
     Seq(ALWAYS_TRUE, ALWAYS_FALSE).foreach { expr =>
       val batch = zeroColumnBatch(rowCount = 87)
@@ -156,7 +214,6 @@ class DefaultExpressionEvaluatorSuite extends AnyFunSuite with TestUtils {
     val actOrOutputVector = evaluator(schema, orExpression, BooleanType.INSTANCE).eval(batch)
     checkBooleanVectors(actOrOutputVector, expOrOutputVector)
   }
-
 
   test("evaluate expression: comparators (=, <, <=, >, >=)") {
     // Literals for each data type from the data type value range, used as inputs to comparator
@@ -332,9 +389,145 @@ class DefaultExpressionEvaluatorSuite extends AnyFunSuite with TestUtils {
     val right = literals(4)
     Seq.range(5, literals.length).foreach { idx =>
       comparatorToExpResults.foreach { comparator =>
-          testComparator(comparator, right, literals(idx), null)
+        testComparator(comparator, right, literals(idx), null)
       }
     }
+  }
+
+  test("evaluate expression: element_at") {
+    import scala.collection.JavaConverters._
+    val nullStr = null.asInstanceOf[String]
+    val testMapValues: Seq[Map[AnyRef, AnyRef]] = Seq(
+      Map("k0" -> "v00", "k1" -> "v01", "k3" -> nullStr, nullStr -> "v04"),
+      Map("k0" -> "v10", "k1" -> nullStr, "k3" -> "v13", nullStr -> "v14"),
+      Map("k0" -> nullStr, "k1" -> "v21", "k3" -> "v23", nullStr -> "v24"),
+      null
+    )
+    val testMapVector = buildMapVector(
+      testMapValues,
+      new MapType(StringType.INSTANCE, StringType.INSTANCE, true))
+
+    val inputBatch = new DefaultColumnarBatch(
+      testMapVector.getSize,
+      new StructType().add("partitionValues", testMapVector.getDataType),
+      Seq(testMapVector).toArray
+    )
+    Seq("k0", "k1", "k2", null).foreach { lookupKey =>
+      val expOutput = testMapValues.map(map => {
+        if (map == null) null
+        else map.getOrElse(lookupKey, null)
+      })
+
+      val lookupKeyExpr = if (lookupKey == null) {
+        Literal.ofNull(StringType.INSTANCE)
+      } else {
+        Literal.ofString(lookupKey)
+      }
+      val elementAtExpr = new ScalarExpression(
+        "element_at",
+        util.Arrays.asList(new Column("partitionValues"), lookupKeyExpr))
+
+      val outputVector = evaluator(inputBatch.getSchema, elementAtExpr, StringType.INSTANCE)
+        .eval(inputBatch)
+      assert(outputVector.getSize === testMapValues.size)
+      assert(outputVector.getDataType === StringType.INSTANCE)
+      Seq.range(0, testMapValues.size).foreach { rowId =>
+        val expNull = expOutput(rowId) == null
+        assert(outputVector.isNullAt(rowId) == expNull)
+        if (!expNull) {
+          assert(outputVector.getString(rowId) === expOutput(rowId))
+        }
+      }
+    }
+  }
+
+  test("evaluate expression: element_at - unsupported map type input") {
+    val inputSchema = new StructType()
+      .add("as_map", new MapType(IntegerType.INSTANCE, BooleanType.INSTANCE, true))
+    val elementAtExpr = new ScalarExpression(
+      "element_at",
+      util.Arrays.asList(new Column("as_map"), Literal.ofString("empty")))
+
+    val ex = intercept[UnsupportedOperationException] {
+      evaluator(inputSchema, elementAtExpr, StringType.INSTANCE)
+    }
+    assert(ex.getMessage.contains(
+      "ELEMENT_AT(column(`as_map`), empty): Supported only on type map(string, string) input data"))
+  }
+
+  test("evaluate expression: element_at - unsupported lookup type input") {
+    val inputSchema = new StructType()
+      .add("as_map", new MapType(StringType.INSTANCE, StringType.INSTANCE, true))
+    val elementAtExpr = new ScalarExpression(
+      "element_at",
+      util.Arrays.asList(new Column("as_map"), Literal.ofShort(24)))
+
+    val ex = intercept[UnsupportedOperationException] {
+      evaluator(inputSchema, elementAtExpr, StringType.INSTANCE)
+    }
+    assert(ex.getMessage.contains("ELEMENT_AT(column(`as_map`), 24): " +
+      "lookup key type (short) is different from the map key type (string)"))
+  }
+
+  test("evaluate expression: partition_value") {
+    // (serialized partition value, partition col type, expected deserialized partition value)
+    val testCases = Seq(
+      ("true", BooleanType.INSTANCE, true),
+      ("false", BooleanType.INSTANCE, false),
+      (null, BooleanType.INSTANCE, null),
+      ("24", ByteType.INSTANCE, 24.toByte),
+      ("null", ByteType.INSTANCE, null),
+      ("876", ShortType.INSTANCE, 876.toShort),
+      ("null", ShortType.INSTANCE, null),
+      ("2342342", IntegerType.INSTANCE, 2342342),
+      ("null", IntegerType.INSTANCE, null),
+      ("234234223", LongType.INSTANCE, 234234223L),
+      ("null", LongType.INSTANCE, null),
+      ("23423.4223", FloatType.INSTANCE, 23423.4223f),
+      ("null", FloatType.INSTANCE, null),
+      ("23423.422233", DoubleType.INSTANCE, 23423.422233d),
+      ("null", DoubleType.INSTANCE, null),
+      ("234.422233", new DecimalType(10, 6), new BigDecimalJ("234.422233")),
+      ("null", DoubleType.INSTANCE, null),
+      ("string_val", StringType.INSTANCE, "string_val"),
+      ("null", StringType.INSTANCE, null),
+      ("binary_val", BinaryType.INSTANCE, "binary_val".getBytes()),
+      ("null", BinaryType.INSTANCE, null),
+      ("2021-11-18", DateType.INSTANCE, InternalUtils.daysSinceEpoch(Date.valueOf("2021-11-18"))),
+      ("null", DateType.INSTANCE, null),
+      ("2021-11-18", DateType.INSTANCE, InternalUtils.daysSinceEpoch(Date.valueOf("2021-11-18"))),
+      ("null", DateType.INSTANCE, null)
+      // TODO: timestamp partition value types are not yet supported in reading
+    )
+
+    val inputBatch = zeroColumnBatch(rowCount = 1)
+    testCases.foreach { testCase =>
+      val (serializedPartVal, partType, deserializedPartVal) = testCase
+      val literalSerializedPartVal = if (serializedPartVal == "null") {
+        Literal.ofNull(StringType.INSTANCE)
+      } else {
+        Literal.ofString(serializedPartVal)
+      }
+      val expr = new PartitionValueExpression(literalSerializedPartVal, partType)
+      val outputVector = evaluator(inputBatch.getSchema, expr, partType).eval(inputBatch)
+      assert(outputVector.getSize === 1)
+      assert(outputVector.getDataType === partType)
+      assert(outputVector.isNullAt(0) === (deserializedPartVal == null))
+      if (deserializedPartVal != null) {
+        assert(getValueAsObject(outputVector, 0) === deserializedPartVal)
+      }
+    }
+  }
+
+  test("evaluate expression: partition_value - invalid serialize value") {
+    val inputBatch = zeroColumnBatch(rowCount = 1)
+    val (serializedPartVal, partType) = ("23423sdfsdf", IntegerType.INSTANCE)
+    val expr = new PartitionValueExpression(Literal.ofString(serializedPartVal), partType)
+    val ex = intercept[IllegalArgumentException] {
+      val outputVector = evaluator(inputBatch.getSchema, expr, partType).eval(inputBatch)
+      outputVector.getInt(0)
+    }
+    assert(ex.getMessage.contains(serializedPartVal))
   }
 
   /**
@@ -421,54 +614,9 @@ class DefaultExpressionEvaluatorSuite extends AnyFunSuite with TestUtils {
     }
   }
 
-  private def booleanVector(values: Seq[BooleanJ]): ColumnVector = {
-    new ColumnVector {
-      override def getDataType: DataType = BooleanType.INSTANCE
-
-      override def getSize: Int = values.length
-
-      override def close(): Unit = {}
-
-      override def isNullAt(rowId: Int): Boolean = values(rowId) == null
-
-      override def getBoolean(rowId: Int): Boolean = values(rowId)
-    }
-  }
-
   private def evaluator(inputSchema: StructType, expression: Expression, outputType: DataType)
   : DefaultExpressionEvaluator = {
     new DefaultExpressionEvaluator(inputSchema, expression, outputType)
-  }
-
-  /** create a columnar batch of given `size` with zero columns in it. */
-  private def zeroColumnBatch(rowCount: Int): ColumnarBatch = {
-    new DefaultColumnarBatch(rowCount, new StructType(), new Array[ColumnVector](0))
-  }
-
-  private def and(left: Predicate, right: Predicate): And = {
-    new And(left, right)
-  }
-
-  private def or(left: Predicate, right: Predicate): Or = {
-    new Or(left, right)
-  }
-
-  private def comparator(symbol: String, left: Expression, right: Expression): Predicate = {
-    new Predicate(symbol, util.Arrays.asList(left, right))
-  }
-
-  private def checkBooleanVectors(actual: ColumnVector, expected: ColumnVector): Unit = {
-    assert(actual.getDataType === expected.getDataType)
-    assert(actual.getSize === expected.getSize)
-    Seq.range(0, actual.getSize).foreach { rowId =>
-      assert(actual.isNullAt(rowId) === expected.isNullAt(rowId))
-      if (!actual.isNullAt(rowId)) {
-        assert(
-          actual.getBoolean(rowId) === expected.getBoolean(rowId),
-          s"unexpected value at $rowId"
-        )
-      }
-    }
   }
 
   private def testComparator(

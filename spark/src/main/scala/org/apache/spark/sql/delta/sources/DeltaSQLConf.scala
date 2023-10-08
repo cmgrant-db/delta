@@ -467,7 +467,7 @@ trait DeltaSQLConfBase {
   val MERGE_MATERIALIZE_SOURCE =
     buildConf("merge.materializeSource")
       .internal()
-      .doc("When to materializes source plan during MERGE execution. " +
+      .doc("When to materialize the source plan during MERGE execution. " +
         "The value 'none' means source will never be materialized. " +
         "The value 'all' means source will always be materialized. " +
         "The value 'auto' means sources will not be materialized when they are certain to be " +
@@ -513,7 +513,7 @@ trait DeltaSQLConfBase {
 
   val MERGE_MATERIALIZE_SOURCE_MAX_ATTEMPTS =
     buildStaticConf("merge.materializeSource.maxAttempts")
-      .doc("How many times to try MERGE with in case of lost RDD materialized source data")
+      .doc("How many times to try MERGE in case of lost RDD materialized source data")
       .intConf
       .createWithDefault(4)
 
@@ -575,6 +575,14 @@ trait DeltaSQLConfBase {
   ////////////////////////////////////
   // Checkpoint V2 Specific Configs
   ////////////////////////////////////
+
+  val CHECKPOINT_V2_DRIVER_THREADPOOL_PARALLELISM =
+    buildStaticConf("checkpointV2.threadpool.size")
+      .doc("The size of the threadpool for fetching CheckpointMetadata and SidecarFiles from a" +
+        " checkpoint.")
+      .internal()
+      .intConf
+      .createWithDefault(32)
 
   val CHECKPOINT_V2_TOP_LEVEL_FILE_FORMAT =
     buildConf("checkpointV2.topLevelFileFormat")
@@ -1236,6 +1244,13 @@ trait DeltaSQLConfBase {
       .booleanConf
       .createWithDefault(true)
 
+  val UPDATE_USE_PERSISTENT_DELETION_VECTORS =
+    buildConf("update.deletionVectors.persistent")
+      .internal()
+      .doc("Enable persistent Deletion Vectors in the Update command.")
+      .booleanConf
+      .createWithDefault(false)
+
   val DELETION_VECTOR_PACKING_TARGET_SIZE =
     buildConf("deletionVectors.packing.targetSize")
       .internal()
@@ -1291,6 +1306,13 @@ trait DeltaSQLConfBase {
           |the column mapping table is being continuously scanned in a streaming query, the analyzed
           |table schema will still be readable after the table is overwritten.
           |""".stripMargin)
+      .booleanConf
+      .createWithDefault(true)
+
+  val DELTALOG_MINOR_COMPACTION_USE_FOR_READS =
+    buildConf("deltaLog.minorCompaction.useForReads")
+      .doc("If true, minor compacted delta log files will be used for creating Snapshots")
+      .internal()
       .booleanConf
       .createWithDefault(true)
 

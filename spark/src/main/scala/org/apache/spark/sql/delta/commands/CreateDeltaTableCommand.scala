@@ -160,7 +160,8 @@ case class CreateDeltaTableCommand(
           options,
           partitionColumns = table.partitionColumnNames,
           configuration = tableWithLocation.properties + ("comment" -> table.comment.orNull),
-          data = data)
+          data = data,
+          Some(tableWithLocation))
         handleCreateTableAsSelect(sparkSession, txn, deltaLog, deltaWriter, tableWithLocation)
         Nil
       case _ =>
@@ -192,7 +193,7 @@ case class CreateDeltaTableCommand(
 
 
     if (UniversalFormat.icebergEnabled(postCommitSnapshot.metadata)) {
-      deltaLog.icebergConverter.convertSnapshot(postCommitSnapshot, None)
+      deltaLog.icebergConverter.convertSnapshot(postCommitSnapshot, tableWithLocation)
     }
   }
 
@@ -611,7 +612,7 @@ case class CreateDeltaTableCommand(
       deltaLog: DeltaLog,
       tableWithLocation: CatalogTable,
       snapshotOpt: Option[Snapshot] = None): OptimisticTransaction = {
-    val txn = deltaLog.startTransaction(snapshotOpt)
+    val txn = deltaLog.startTransaction(None, snapshotOpt)
 
     // During CREATE/REPLACE, we synchronously run conversion (if Uniform is enabled) so
     // we always remove the post commit hook here.

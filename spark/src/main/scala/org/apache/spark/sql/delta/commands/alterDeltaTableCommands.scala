@@ -30,6 +30,7 @@ import org.apache.spark.sql.delta.schema.{SchemaMergingUtils, SchemaUtils}
 import org.apache.spark.sql.delta.schema.SchemaUtils.transformColumnsStructs
 import org.apache.spark.sql.delta.sources.DeltaSQLConf
 import org.apache.spark.sql.delta.stats.StatisticsCollection
+import org.apache.hadoop.fs.Path
 
 import org.apache.spark.sql.{AnalysisException, Column, Row, SparkSession}
 import org.apache.spark.sql.catalyst.analysis.{Resolver, UnresolvedAttribute}
@@ -49,14 +50,15 @@ trait AlterDeltaTableCommand extends DeltaCommand {
 
   def table: DeltaTableV2
 
-  protected def startTransaction(spark: SparkSession): OptimisticTransaction = {
-    val txn = table.deltaLog.startTransaction()
+  protected def startTransaction(): OptimisticTransaction = {
+    // WARNING: It's not safe to use startTransactionWithInitialSnapshot here. Some commands call
+    // this method more than once, and some commands can be created with a stale table.
+    val txn = table.startTransaction()
     if (txn.readVersion == -1) {
       throw DeltaErrors.notADeltaTableException(table.name())
     }
     txn
   }
-
 
   /**
    * Check if the column to change has any dependent expressions:
@@ -106,7 +108,7 @@ case class AlterTableSetPropertiesDeltaCommand(
   override def run(sparkSession: SparkSession): Seq[Row] = {
     val deltaLog = table.deltaLog
     recordDeltaOperation(deltaLog, "delta.ddl.alter.setProperties") {
-      val txn = startTransaction(sparkSession)
+      val txn = startTransaction()
 
       val metadata = txn.metadata
       val filteredConfs = configuration.filterKeys {
@@ -154,7 +156,7 @@ case class AlterTableUnsetPropertiesDeltaCommand(
   override def run(sparkSession: SparkSession): Seq[Row] = {
     val deltaLog = table.deltaLog
     recordDeltaOperation(deltaLog, "delta.ddl.alter.unsetProperties") {
-      val txn = startTransaction(sparkSession)
+      val txn = startTransaction()
       val metadata = txn.metadata
 
       val normalizedKeys = DeltaConfigs.normalizeConfigKeys(propKeys)
@@ -229,7 +231,8 @@ case class AlterTableDropFeatureDeltaCommand(
     val log = table.deltaLog
     val snapshot = log.update(checkIfUpdatedSinceTs = Some(snapshotRefreshStartTime))
     val emptyCommitTS = System.nanoTime()
-    log.startTransaction(Some(snapshot)).commit(Nil, DeltaOperations.EmptyCommit)
+    log.startTransaction(table.catalogTable, Some(snapshot))
+      .commit(Nil, DeltaOperations.EmptyCommit)
     log.checkpoint(log.update(checkIfUpdatedSinceTs = Some(emptyCommitTS)))
   }
 
@@ -257,7 +260,7 @@ case class AlterTableDropFeatureDeltaCommand(
 
       // Check whether the protocol contains the feature in either the writer features list or
       // the reader+writer features list.
-      if (!table.snapshot.protocol.readerAndWriterFeatureNames.contains(featureName)) {
+      if (!table.initialSnapshot.protocol.readerAndWriterFeatureNames.contains(featureName)) {
         throw DeltaErrors.dropTableFeatureFeatureNotSupportedByProtocol(featureName)
       }
 
@@ -289,10 +292,10 @@ case class AlterTableDropFeatureDeltaCommand(
         // certainly still contain traces of the feature. We don't have to run an expensive
         // explicit check, but instead we fail straight away.
         throw DeltaErrors.dropTableFeatureWaitForRetentionPeriod(
-          featureName, table.snapshot.metadata)
+          featureName, table.initialSnapshot.metadata)
       }
 
-      val txn = startTransaction(sparkSession)
+      val txn = table.startTransaction()
       val snapshot = txn.snapshot
 
       // Verify whether all requirements hold before performing the protocol downgrade.
@@ -348,7 +351,7 @@ case class AlterTableAddColumnsDeltaCommand(
   override def run(sparkSession: SparkSession): Seq[Row] = {
     val deltaLog = table.deltaLog
     recordDeltaOperation(deltaLog, "delta.ddl.alter.addColumns") {
-      val txn = startTransaction(sparkSession)
+      val txn = startTransaction()
 
       if (SchemaUtils.filterRecursively(
             StructType(colsToAddWithPosition.map {
@@ -444,7 +447,7 @@ case class AlterTableDropColumnsDeltaCommand(
     }
     val deltaLog = table.deltaLog
     recordDeltaOperation(deltaLog, "delta.ddl.alter.dropColumns") {
-      val txn = startTransaction(sparkSession)
+      val txn = startTransaction()
       val metadata = txn.metadata
       if (txn.metadata.columnMappingMode == NoMapping) {
         throw DeltaErrors.dropColumnNotSupported(suggestUpgrade = true)
@@ -504,7 +507,7 @@ case class AlterTableChangeColumnDeltaCommand(
   override def run(sparkSession: SparkSession): Seq[Row] = {
     val deltaLog = table.deltaLog
     recordDeltaOperation(deltaLog, "delta.ddl.alter.changeColumns") {
-      val txn = startTransaction(sparkSession)
+      val txn = startTransaction()
       val metadata = txn.metadata
       val oldSchema = metadata.schema
       val resolver = sparkSession.sessionState.conf.resolver
@@ -708,7 +711,7 @@ case class AlterTableReplaceColumnsDeltaCommand(
 
   override def run(sparkSession: SparkSession): Seq[Row] = {
     recordDeltaOperation(table.deltaLog, "delta.ddl.alter.replaceColumns") {
-      val txn = startTransaction(sparkSession)
+      val txn = startTransaction()
 
       val metadata = txn.metadata
       val existingSchema = metadata.schema
@@ -773,7 +776,7 @@ case class AlterTableSetLocationDeltaCommand(
 
     var updatedTable = catalogTable.withNewStorage(locationUri = Some(locUri))
 
-    val newTable = DeltaLog.forTable(sparkSession, location).update()
+    val (_, newTable) = DeltaLog.forTableWithSnapshot(sparkSession, new Path(location))
     if (newTable.version == -1) {
       throw DeltaErrors.notADeltaTableException(DeltaTableIdentifier(path = Some(location)))
     }
@@ -837,7 +840,7 @@ case class AlterTableAddConstraintDeltaCommand(
       throw DeltaErrors.invalidConstraintName(name)
     }
     recordDeltaOperation(deltaLog, "delta.ddl.alter.addConstraint") {
-      val txn = startTransaction(sparkSession)
+      val txn = startTransaction()
 
       getConstraintWithName(table, name, txn.metadata, sparkSession).foreach { oldExpr =>
         throw DeltaErrors.constraintAlreadyExists(name, oldExpr)
@@ -889,7 +892,7 @@ case class AlterTableDropConstraintDeltaCommand(
   override def run(sparkSession: SparkSession): Seq[Row] = {
     val deltaLog = table.deltaLog
     recordDeltaOperation(deltaLog, "delta.ddl.alter.dropConstraint") {
-      val txn = startTransaction(sparkSession)
+      val txn = startTransaction()
 
       val oldExprText = Constraints.getExprTextByName(name, txn.metadata, sparkSession)
       if (oldExprText.isEmpty && !ifExists && !sparkSession.sessionState.conf.getConf(

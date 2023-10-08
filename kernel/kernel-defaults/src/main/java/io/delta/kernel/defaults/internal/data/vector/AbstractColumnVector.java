@@ -16,12 +16,12 @@
 package io.delta.kernel.defaults.internal.data.vector;
 
 import java.math.BigDecimal;
-import java.util.List;
-import java.util.Map;
 import java.util.Optional;
 import static java.util.Objects.requireNonNull;
 
+import io.delta.kernel.data.ArrayValue;
 import io.delta.kernel.data.ColumnVector;
+import io.delta.kernel.data.MapValue;
 import io.delta.kernel.data.Row;
 import io.delta.kernel.types.DataType;
 
@@ -73,7 +73,10 @@ public abstract class AbstractColumnVector
     @Override
     public boolean isNullAt(int rowId) {
         checkValidRowId(rowId);
-        return !nullability.isPresent() || nullability.get()[rowId];
+        if (!nullability.isPresent()) {
+            return false; // if there is no-nullability vector, every value is a non-null value
+        }
+        return nullability.get()[rowId];
     }
 
     @Override
@@ -127,7 +130,7 @@ public abstract class AbstractColumnVector
     }
 
     @Override
-    public <K, V> Map<K, V> getMap(int rowId) {
+    public MapValue getMap(int rowId) {
         throw unsupportedDataAccessException("map");
     }
 
@@ -137,7 +140,7 @@ public abstract class AbstractColumnVector
     }
 
     @Override
-    public <T> List<T> getArray(int rowId) {
+    public ArrayValue getArray(int rowId) {
         throw unsupportedDataAccessException("array");
     }
 

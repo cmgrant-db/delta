@@ -556,6 +556,12 @@
     ],
     "sqlState" : "0AKDE"
   },
+  "DELTA_DELETION_VECTOR_CARDINALITY_MISMATCH" : {
+    "message" : [
+      "Deletion vector integrity check failed. Encountered a cardinality mismatch."
+    ],
+    "sqlState" : "XXKDS"
+  },
   "DELTA_DELETION_VECTOR_CHECKSUM_MISMATCH" : {
     "message" : [
       "Could not verify deletion vector integrity, CRC checksum verification failed."
@@ -1553,7 +1559,7 @@
   },
   "DELTA_PATH_DOES_NOT_EXIST" : {
     "message" : [
-      "<path> doesn't exist"
+      "<path> doesn't exist, or is not a Delta table."
     ],
     "sqlState" : "42K03"
   },

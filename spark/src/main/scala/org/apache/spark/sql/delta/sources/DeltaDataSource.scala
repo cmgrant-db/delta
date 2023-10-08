@@ -88,7 +88,7 @@ class DeltaDataSource
       throw DeltaErrors.timeTravelNotSupportedException
     }
 
-    val (_, snapshot) = DeltaLog.forTableWithSnapshot(sqlContext.sparkSession, path)
+    val (_, snapshot) = DeltaLog.forTableWithSnapshot(sqlContext.sparkSession, new Path(path))
     // This is the analyzed schema for Delta streaming
     val readSchema = {
       // Check if we would like to merge consecutive schema changes, this would allow customers
@@ -132,7 +132,8 @@ class DeltaDataSource
       throw DeltaErrors.pathNotSpecifiedException
     })
     val options = new DeltaOptions(parameters, sqlContext.sparkSession.sessionState.conf)
-    val (deltaLog, snapshot) = DeltaLog.forTableWithSnapshot(sqlContext.sparkSession, path)
+    val (deltaLog, snapshot) =
+      DeltaLog.forTableWithSnapshot(sqlContext.sparkSession, new Path(path))
     val schemaTrackingLogOpt =
       getMetadataTrackingLogForDeltaSource(
         sqlContext.sparkSession, snapshot, parameters,
@@ -168,6 +169,8 @@ class DeltaDataSource
       throw DeltaErrors.outputModeNotSupportedException(getClass.getName, outputMode.toString)
     }
     val deltaOptions = new DeltaOptions(parameters, sqlContext.sparkSession.sessionState.conf)
+    // NOTE: Spark API doesn't give access to the CatalogTable here, but DeltaAnalysis will pick
+    // that info out of the containing WriteToStream (if present), and update the sink there.
     new DeltaSink(sqlContext, new Path(path), partitionColumns, outputMode, deltaOptions)
   }
 
@@ -183,7 +186,7 @@ class DeltaDataSource
       .map(DeltaDataSource.decodePartitioningColumns)
       .getOrElse(Nil)
 
-    val deltaLog = DeltaLog.forTable(sqlContext.sparkSession, path, parameters)
+    val deltaLog = DeltaLog.forTable(sqlContext.sparkSession, new Path(path), parameters)
     WriteIntoDelta(
       deltaLog = deltaLog,
       mode = mode,
@@ -191,7 +194,10 @@ class DeltaDataSource
       partitionColumns = partitionColumns,
       configuration = DeltaConfigs.validateConfigurations(
         parameters.filterKeys(_.startsWith("delta.")).toMap),
-      data = data).run(sqlContext.sparkSession)
+      data = data,
+      // empty catalogTable is acceptable as the code path is only for path based writes
+      // (df.write.save("path")) which does not need to use/update catalog
+      catalogTableOpt = None).run(sqlContext.sparkSession)
 
     deltaLog.createRelation()
   }

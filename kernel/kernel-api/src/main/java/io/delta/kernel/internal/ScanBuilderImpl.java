@@ -22,13 +22,14 @@ import java.util.Optional;
 import io.delta.kernel.Scan;
 import io.delta.kernel.ScanBuilder;
 import io.delta.kernel.client.TableClient;
+import io.delta.kernel.data.FilteredColumnarBatch;
 import io.delta.kernel.expressions.Predicate;
 import io.delta.kernel.types.StructType;
 import io.delta.kernel.types.TimestampType;
 import io.delta.kernel.utils.CloseableIterator;
 import io.delta.kernel.utils.Tuple2;
+import io.delta.kernel.utils.VectorUtils;
 
-import io.delta.kernel.internal.actions.AddFile;
 import io.delta.kernel.internal.actions.Metadata;
 import io.delta.kernel.internal.actions.Protocol;
 import io.delta.kernel.internal.fs.Path;
@@ -41,7 +42,7 @@ public class ScanBuilderImpl
     implements ScanBuilder {
 
     private final StructType snapshotSchema;
-    private final CloseableIterator<AddFile> filesIter;
+    private final CloseableIterator<FilteredColumnarBatch> filesIter;
     private final Lazy<Tuple2<Protocol, Metadata>> protocolAndMetadata;
     private final TableClient tableClient;
     private final Path dataPath;
@@ -53,7 +54,7 @@ public class ScanBuilderImpl
         Path dataPath,
         Lazy<Tuple2<Protocol, Metadata>> protocolAndMetadata,
         StructType snapshotSchema,
-        CloseableIterator<AddFile> filesIter,
+        CloseableIterator<FilteredColumnarBatch> filesIter,
         TableClient tableClient) {
         this.dataPath = dataPath;
         this.snapshotSchema = snapshotSchema;
@@ -86,7 +87,8 @@ public class ScanBuilderImpl
         // TODO: support timestamp type partition columns
         // Timestamp partition columns have complicated semantics related to timezones so block this
         // for now
-        List<String> partitionCols = protocolAndMetadata.get()._2.getPartitionColumns();
+        List<String> partitionCols = VectorUtils.toJavaList(
+                protocolAndMetadata.get()._2.getPartitionColumns());
         for (String colName : partitionCols) {
             if (readSchema.indexOf(colName) >= 0 &&
                 readSchema.get(colName).getDataType() instanceof TimestampType) {

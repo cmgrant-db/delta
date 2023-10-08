@@ -23,6 +23,7 @@ import org.apache.spark.sql.delta.DeltaOptions.{OVERWRITE_SCHEMA_OPTION, PARTITI
 import org.apache.spark.sql.delta.actions.{Action, FileAction}
 import org.apache.spark.sql.delta.sources.DeltaSQLConf
 import org.apache.spark.sql.delta.test.DeltaSQLCommandTest
+import org.apache.spark.sql.delta.test.DeltaTestImplicits._
 import org.apache.spark.sql.delta.util.FileNames
 import org.apache.commons.io.FileUtils
 import org.apache.parquet.format.CompressionCodec
@@ -205,7 +206,8 @@ class DeltaOptionSuite extends QueryTest
     CompressionCodec.UNCOMPRESSED -> "",
     CompressionCodec.SNAPPY -> "snappy.",
     CompressionCodec.GZIP -> "gz.",
-    CompressionCodec.LZ4 -> "lz4.",
+    CompressionCodec.LZ4 -> "lz4hadoop.",
+    // CompressionCodec.LZ4_RAW -> "lz4raw.", // Support is not yet available in Spark 3.5
     CompressionCodec.ZSTD -> "zstd."
   )
 

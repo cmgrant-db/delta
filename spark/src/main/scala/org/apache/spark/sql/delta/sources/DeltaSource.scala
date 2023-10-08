@@ -592,14 +592,15 @@ trait DeltaSourceBase extends Source
     log.info(s"checking read incompatibility with schema at version $version, " +
       s"inside batch[$batchStartVersion, ${batchEndVersionOpt.getOrElse("latest")}]")
 
+    val (newMetadata, oldMetadata) = if (version < snapshotAtSourceInit.version) {
+      (snapshotAtSourceInit.metadata, metadata)
+    } else {
+      (metadata, snapshotAtSourceInit.metadata)
+    }
+
     // Column mapping schema changes
     if (!allowUnsafeStreamingReadOnColumnMappingSchemaChanges) {
       assert(!trackingMetadataChange, "should not check schema change while tracking it")
-      val (newMetadata, oldMetadata) = if (version < snapshotAtSourceInit.version) {
-        (snapshotAtSourceInit.metadata, metadata)
-      } else {
-        (metadata, snapshotAtSourceInit.metadata)
-      }
 
       if (!DeltaColumnMapping.hasNoColumnMappingSchemaChanges(newMetadata, oldMetadata)) {
         throw DeltaErrors.blockStreamingReadsWithIncompatibleColumnMappingSchemaChanges(
@@ -641,7 +642,9 @@ trait DeltaSourceBase extends Source
           allowMissingColumns =
             isStreamingFromColumnMappingTable &&
               allowUnsafeStreamingReadOnColumnMappingSchemaChanges &&
-              backfilling
+              backfilling,
+          newPartitionColumns = newMetadata.partitionColumns,
+          oldPartitionColumns = oldMetadata.partitionColumns
         )) {
         // Only schema change later than the current read snapshot/schema can be retried, in other
         // words, backfills could never be retryable, because we have no way to refresh
@@ -951,7 +954,8 @@ case class DeltaSource(
       version: Long,
       batchStartVersion: Long,
       batchEndVersionOpt: Option[Long] = None,
-      verifyMetadataAction: Boolean = true): (Boolean, Option[Metadata], Option[Protocol]) = {
+      verifyMetadataAction: Boolean = true
+  ): (Boolean, Option[Metadata], Option[Protocol]) = {
     /** A check on the source table that disallows changes on the source data. */
     val shouldAllowChanges = options.ignoreChanges || ignoreFileDeletion || skipChangeCommits
     /** A check on the source table that disallows commits that only include deletes to the data. */

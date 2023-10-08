@@ -639,7 +639,7 @@ trait DeltaConfigsBase extends DeltaLogging {
 
   /** Policy to decide what kind of checkpoint to write to a table. */
   val CHECKPOINT_POLICY = buildConfig[CheckpointPolicy.Policy](
-    key = "checkpointPolicy-dev",
+    key = "checkpointPolicy",
     defaultValue = CheckpointPolicy.Classic.name,
     fromString = str => CheckpointPolicy.fromName(str),
     validationFunction = (v => CheckpointPolicy.ALL.exists(_.name == v.name)),
