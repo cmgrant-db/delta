@@ -31,7 +31,7 @@ import org.apache.hadoop.fs.Path
 import org.apache.spark.SparkConf
 import org.apache.spark.network.util.JavaUtils
 import org.apache.spark.sql.{QueryTest, Row}
-import org.apache.spark.sql.delta.{DeltaLog, OptimisticTransaction}
+import org.apache.spark.sql.delta.{DeltaConfigs, DeltaLog, OptimisticTransaction}
 import org.apache.spark.sql.delta.DeltaOperations.ManualUpdate
 import org.apache.spark.sql.delta.actions.{Metadata, _}
 import org.apache.spark.sql.delta.sources.DeltaSQLConf
@@ -526,7 +526,7 @@ class GoldenTables extends QueryTest with SharedSparkSession {
 
   private def writeDataWithSchema(tblLoc: String, data: Seq[Row], schema: StructType): Unit = {
     val df = spark.createDataFrame(spark.sparkContext.parallelize(data), schema)
-    df.write.format("delta").save(tblLoc)
+    df.write.format("delta").mode("append").save(tblLoc)
   }
 
   /** TEST: DeltaDataReaderSuite > read - primitives */
@@ -1276,6 +1276,77 @@ class GoldenTables extends QueryTest with SharedSparkSession {
     spark.range(100, 200).write.format("delta").mode("append").save(tablePath)
     spark.range(500, 1000).write.format("delta").mode("overwrite").save(tablePath)
     sql(s"RESTORE TABLE delta.`$tablePath` TO VERSION AS OF 1")
+  }
+
+  generateGoldenTable("basic-stats-prototype") { tablePath =>
+    spark.range(10).repartition(1).write.format("delta").mode("append").save(tablePath)
+    spark.range(10, 20).repartition(1).write.format("delta").mode("append").save(tablePath)
+    spark.range(20, 30).repartition(1).write.format("delta").mode("append").save(tablePath)
+  }
+
+  generateGoldenTable("basic-stats-all-types") { tablePath =>
+
+    val schema = new StructType()
+      .add("as_int", IntegerType)
+      .add("as_long", LongType)
+      .add("as_byte", ByteType)
+      .add("as_short", ShortType)
+      .add("as_float", FloatType)
+      .add("as_double", DoubleType)
+      .add("as_string", StringType)
+      .add("as_date", DateType)
+      .add("as_timestamp", TimestampType)
+      .add("as_big_decimal", DecimalType(1, 0))
+      .add("as_boolean", BooleanType)
+
+    writeDataWithSchema(
+      tablePath,
+      Row(0, 0.longValue, 0.byteValue, 0.shortValue, 0.floatValue, 0.doubleValue, "0",
+        java.sql.Date.valueOf("2000-01-01"), Timestamp.valueOf("2000-01-01 00:00:00"),
+        new JBigDecimal(0), true) ::
+        Row(10, 10.longValue, 10.byteValue, 10.shortValue, 10.floatValue, 10.doubleValue, "10",
+          java.sql.Date.valueOf("2000-10-10"), Timestamp.valueOf("2000-10-10 10:10:10"),
+          new JBigDecimal(10), true) :: Nil,
+      schema
+    )
+
+    writeDataWithSchema(
+      tablePath,
+      Row(50, 50.longValue, 50.byteValue, 50.shortValue, 50.floatValue, 50.doubleValue, "50",
+        java.sql.Date.valueOf("2050-01-01"), Timestamp.valueOf("2050-01-01 00:00:00"),
+        new JBigDecimal(50), true) ::
+        Row(50, 50.longValue, 50.byteValue, 50.shortValue, 50.floatValue, 50.doubleValue, "50",
+          java.sql.Date.valueOf("2050-01-01"), Timestamp.valueOf("2050-01-01 00:00:00"),
+          new JBigDecimal(50), true) :: Nil,
+      schema
+    )
+  }
+
+  generateGoldenTable("missing-stats-prototype") { tablePath =>
+    // TODO is this the intentional "missing" stats?
+    // todo no stats at all?
+
+    val schema = new StructType()
+      .add("col1", IntegerType)
+      .add("col2", IntegerType)
+      .add("col3", IntegerType)
+      .add("col4", IntegerType)
+
+    withSQLConf(
+      DeltaConfigs.DATA_SKIPPING_NUM_INDEXED_COLS.defaultTablePropertyKey-> "2") {
+
+      writeDataWithSchema(
+        tablePath,
+        Row(0, 0, 0, 0) :: Row(1, 1, 1, 1) :: Nil,
+        schema
+      )
+
+      writeDataWithSchema(
+        tablePath,
+        Row(10, 10, 10, 10) :: Row(11, 11, 11, 11) :: Nil,
+        schema
+      )
+    }
   }
 }
 
