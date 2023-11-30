@@ -16,6 +16,7 @@
 package io.delta.kernel.defaults.internal.data;
 
 import java.math.BigDecimal;
+import java.sql.Date;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
@@ -30,6 +31,7 @@ import io.delta.kernel.data.ColumnVector;
 import io.delta.kernel.data.MapValue;
 import io.delta.kernel.data.Row;
 import io.delta.kernel.types.*;
+import io.delta.kernel.internal.util.InternalUtils;
 
 import io.delta.kernel.defaults.internal.data.vector.DefaultGenericVector;
 
@@ -70,7 +72,7 @@ public class DefaultJsonRow implements Row {
 
     @Override
     public short getShort(int ordinal) {
-        throw new UnsupportedOperationException("not yet implemented");
+        return (short) parsedValues[ordinal];
     }
 
     @Override
@@ -85,12 +87,12 @@ public class DefaultJsonRow implements Row {
 
     @Override
     public float getFloat(int ordinal) {
-        throw new UnsupportedOperationException("not yet implemented");
+        return (float) parsedValues[ordinal];
     }
 
     @Override
     public double getDouble(int ordinal) {
-        throw new UnsupportedOperationException("not yet implemented");
+        return (double) parsedValues[ordinal];
     }
 
     @Override
@@ -100,7 +102,7 @@ public class DefaultJsonRow implements Row {
 
     @Override
     public BigDecimal getDecimal(int ordinal) {
-        throw new UnsupportedOperationException("not yet implemented");
+        return (BigDecimal) parsedValues[ordinal];
     }
 
     @Override
@@ -151,12 +153,47 @@ public class DefaultJsonRow implements Row {
             return jsonValue.numberValue().longValue();
         }
 
+        if (dataType instanceof DoubleType) {
+            throwIfTypeMismatch("double", jsonValue.isFloatingPointNumber(), jsonValue);
+            return jsonValue.numberValue().doubleValue();
+        }
+
         if (dataType instanceof StringType) {
             throwIfTypeMismatch(
                 "string",
                 jsonValue.isTextual(),
                 jsonValue);
             return jsonValue.asText();
+        }
+
+        if (dataType instanceof ByteType) {
+            // TODO
+            return jsonValue.numberValue().byteValue();
+        }
+
+        if (dataType instanceof ShortType) {
+            // TODO canConvertToInt? see docs
+            // throwIfTypeMismatch("short", jsonValue.isShort(), jsonValue);
+            return jsonValue.numberValue().shortValue();
+        }
+
+        if (dataType instanceof FloatType) {
+            // TODO canConvertToInt? see docs
+            // throwIfTypeMismatch("float", jsonValue.isFloat(), jsonValue);
+            return jsonValue.numberValue().floatValue();
+        }
+
+        if (dataType instanceof DecimalType) {
+            throwIfTypeMismatch("decimal", jsonValue.isNumber(), jsonValue);
+            return jsonValue.decimalValue();
+        }
+
+        if (dataType instanceof DateType) {
+            throwIfTypeMismatch(
+                "string",
+                jsonValue.isTextual(),
+                jsonValue);
+            return InternalUtils.daysSinceEpoch(Date.valueOf(jsonValue.textValue()));
         }
 
         if (dataType instanceof StructType) {

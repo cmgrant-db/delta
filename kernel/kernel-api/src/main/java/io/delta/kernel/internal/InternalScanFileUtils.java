@@ -54,32 +54,29 @@ public class InternalScanFileUtils {
         TABLE_ROOT_DATA_TYPE,
         false /* nullable */);
 
-    public static final StructType SCAN_FILE_SCHEMA = new StructType()
-        .add("add", AddFile.SCHEMA)
-        // NOTE: table root is temporary, until the path in `add.path` is converted to
-        // an absolute path. https://github.com/delta-io/delta/issues/2089
-        .add(TABLE_ROOT_COL_NAME, TABLE_ROOT_DATA_TYPE);
+    public static StructType scanFileSchema(StructType dataSchema) {
+        return new StructType()
+            .add("add", AddFile.getAddFileSchema(dataSchema))
+            // NOTE: table root is temporary, until the path in `add.path` is converted to
+            // an absolute path. https://github.com/delta-io/delta/issues/2089
+            .add(TABLE_ROOT_COL_NAME, TABLE_ROOT_DATA_TYPE);
+    }
 
-    private static final int ADD_FILE_ORDINAL = SCAN_FILE_SCHEMA.indexOf("add");
+    private static final int ADD_FILE_ORDINAL = 0;
 
-    private static final StructType ADD_FILE_SCHEMA =
-        (StructType) SCAN_FILE_SCHEMA.get("add").getDataType();
+    private static final int ADD_FILE_PATH_ORDINAL = 0;
 
-    private static final int ADD_FILE_PATH_ORDINAL = ADD_FILE_SCHEMA.indexOf("path");
+    private static final int ADD_FILE_PARTITION_VALUES_ORDINAL = 1;
 
-    private static final int ADD_FILE_PARTITION_VALUES_ORDINAL =
-        ADD_FILE_SCHEMA.indexOf("partitionValues");
+    private static final int ADD_FILE_SIZE_ORDINAL = 2;
 
-    private static final int ADD_FILE_SIZE_ORDINAL = ADD_FILE_SCHEMA.indexOf("size");
+    private static final int ADD_FILE_MOD_TIME_ORDINAL = 4;
 
-    private static final int ADD_FILE_MOD_TIME_ORDINAL =
-        ADD_FILE_SCHEMA.indexOf("modificationTime");
+    private static final int ADD_FILE_DATA_CHANGE_ORDINAL = 5;
 
-    private static final int ADD_FILE_DATA_CHANGE_ORDINAL = ADD_FILE_SCHEMA.indexOf("dataChange");
+    private static final int ADD_FILE_DV_ORDINAL = 6;
 
-    private static final int ADD_FILE_DV_ORDINAL = ADD_FILE_SCHEMA.indexOf("deletionVector");
-
-    private static final int TABLE_ROOT_ORDINAL = SCAN_FILE_SCHEMA.indexOf(TABLE_ROOT_COL_NAME);
+    private static final int TABLE_ROOT_ORDINAL = 1;
 
     /**
      * Get the {@link FileStatus} of {@code AddFile} from given scan file {@link Row}. The
@@ -137,7 +134,7 @@ public class InternalScanFileUtils {
      */
     public static Row generateScanFileRow(FileStatus fileStatus) {
         Row addFile = new GenericRow(
-            ADD_FILE_SCHEMA,
+            AddFile.getAddFileSchema(new StructType()),
             new HashMap<Integer, Object>() {
                 {
                     put(ADD_FILE_PATH_ORDINAL, fileStatus.getPath());
@@ -150,7 +147,7 @@ public class InternalScanFileUtils {
             });
 
         return new GenericRow(
-            SCAN_FILE_SCHEMA,
+            scanFileSchema(new StructType()),
             new HashMap<Integer, Object>() {
                 {
                     put(ADD_FILE_ORDINAL, addFile);

@@ -27,7 +27,9 @@ import io.delta.kernel.data.FileDataReadResult;
 import io.delta.kernel.data.FilteredColumnarBatch;
 import io.delta.kernel.expressions.ExpressionEvaluator;
 import io.delta.kernel.expressions.Literal;
+import io.delta.kernel.types.BooleanType;
 import io.delta.kernel.types.StringType;
+import io.delta.kernel.types.StructField;
 import io.delta.kernel.utils.CloseableIterator;
 
 import io.delta.kernel.internal.InternalScanFileUtils;
@@ -68,6 +70,8 @@ class ActiveAddFilesIterator implements CloseableIterator<FilteredColumnarBatch>
      */
     private boolean[] selectionVectorBuffer;
     private ExpressionEvaluator tableRootVectorGenerator;
+    private ExpressionEvaluator isFromCheckpointGeneratorTrue;
+    private ExpressionEvaluator isFromCheckpointGeneratorFalse;
     private boolean closed;
 
     ActiveAddFilesIterator(
@@ -148,8 +152,6 @@ class ActiveAddFilesIterator implements CloseableIterator<FilteredColumnarBatch>
         final FileDataReadResult fileDataReadResult = _next._1;
         final boolean isFromCheckpoint = _next._2;
         final ColumnarBatch addRemoveColumnarBatch = fileDataReadResult.getData();
-
-        assert (addRemoveColumnarBatch.getSchema().equals(LogReplay.ADD_REMOVE_READ_SCHEMA));
 
         // Step 1: Update `tombstonesFromJson` with all the RemoveFiles in this columnar batch, if
         //         and only if this batch is not from a checkpoint.
@@ -235,6 +237,35 @@ class ActiveAddFilesIterator implements CloseableIterator<FilteredColumnarBatch>
             1,
             InternalScanFileUtils.TABLE_ROOT_STRUCT_FIELD,
             tableRootVector);
+
+        // Step 5: add isFromCheckpoint as a column in the columnar batch
+        if (isFromCheckpoint) {
+            if (isFromCheckpointGeneratorTrue == null) {
+                isFromCheckpointGeneratorTrue = tableClient.getExpressionHandler()
+                    .getEvaluator(
+                        scanAddFiles.getSchema(),
+                        Literal.ofBoolean(true),
+                        BooleanType.BOOLEAN);
+            }
+            ColumnVector isFromCheckpointVector = isFromCheckpointGeneratorTrue.eval(scanAddFiles);
+            scanAddFiles = scanAddFiles.withNewColumn(
+                2,
+                new StructField("isFromCheckpoint", BooleanType.BOOLEAN, false),
+                isFromCheckpointVector);
+        } else {
+            if (isFromCheckpointGeneratorFalse == null) {
+                isFromCheckpointGeneratorFalse = tableClient.getExpressionHandler()
+                    .getEvaluator(
+                        scanAddFiles.getSchema(),
+                        Literal.ofBoolean(false),
+                        BooleanType.BOOLEAN);
+            }
+            ColumnVector isFromCheckpointVector = isFromCheckpointGeneratorFalse.eval(scanAddFiles);
+            scanAddFiles = scanAddFiles.withNewColumn(
+                2,
+                new StructField("isFromCheckpoint", BooleanType.BOOLEAN, false),
+                isFromCheckpointVector);
+        }
 
         Optional<ColumnVector> selectionColumnVector = atLeastOneUnselected ?
             Optional.of(tableClient.getExpressionHandler()

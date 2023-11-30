@@ -15,6 +15,7 @@
  */
 package io.delta.kernel.expressions;
 
+import java.util.Arrays;
 import java.util.List;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -90,6 +91,17 @@ import io.delta.kernel.client.ExpressionHandler;
  */
 @Evolving
 public class Predicate extends ScalarExpression {
+
+    /** Constructor for a unary Predicate expression */
+    public Predicate(String name, Expression child) {
+        this(name, Arrays.asList(child));
+    }
+
+    /** Constructor for a binary Predicate expression */
+    public Predicate(String name, Expression left, Expression right) {
+        this(name, Arrays.asList(left, right));
+    }
+
     public Predicate(String name, List<Expression> children) {
         super(name, children);
     }

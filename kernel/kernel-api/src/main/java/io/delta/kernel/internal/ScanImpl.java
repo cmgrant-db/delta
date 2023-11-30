@@ -18,9 +18,13 @@ package io.delta.kernel.internal;
 import java.util.*;
 import static java.util.stream.Collectors.toMap;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import io.delta.kernel.Scan;
 import io.delta.kernel.client.TableClient;
 import io.delta.kernel.data.*;
+import io.delta.kernel.expressions.Or;
 import io.delta.kernel.expressions.Predicate;
 import io.delta.kernel.expressions.PredicateEvaluator;
 import io.delta.kernel.types.DataType;
@@ -30,10 +34,9 @@ import io.delta.kernel.utils.CloseableIterator;
 import io.delta.kernel.internal.actions.Metadata;
 import io.delta.kernel.internal.actions.Protocol;
 import io.delta.kernel.internal.data.ScanStateRow;
+import io.delta.kernel.internal.data.StructVectorColumnarBatch;
 import io.delta.kernel.internal.fs.Path;
-import io.delta.kernel.internal.util.InternalSchemaUtils;
-import io.delta.kernel.internal.util.PartitionUtils;
-import io.delta.kernel.internal.util.Tuple2;
+import io.delta.kernel.internal.util.*;
 import static io.delta.kernel.internal.util.PartitionUtils.rewritePartitionPredicateOnScanFileSchema;
 import static io.delta.kernel.internal.util.Preconditions.checkArgument;
 
@@ -41,6 +44,9 @@ import static io.delta.kernel.internal.util.Preconditions.checkArgument;
  * Implementation of {@link Scan}
  */
 public class ScanImpl implements Scan {
+
+    private static final Logger logger = LoggerFactory.getLogger(ScanImpl.class);
+
     /**
      * Schema of the snapshot from the Delta log being scanned in this scan. It is a logical schema
      * with metadata properties to derive the physical schema.
@@ -88,7 +94,8 @@ public class ScanImpl implements Scan {
         }
         accessedScanFiles = true;
 
-        return applyPartitionPruning(tableClient, filesIter);
+        // TODO when should we apply the data skipping?
+        return applyDataSkipping(tableClient, applyPartitionPruning(tableClient, filesIter));
     }
 
     @Override
@@ -154,7 +161,7 @@ public class ScanImpl implements Scan {
 
         PredicateEvaluator predicateEvaluator =
             tableClient.getExpressionHandler().getPredicateEvaluator(
-                InternalScanFileUtils.SCAN_FILE_SCHEMA,
+                InternalScanFileUtils.scanFileSchema(metadata.getSchema()),
                 predicateOnScanFileBatch);
 
         return filesIter.map(filteredScanFileBatch -> {
@@ -165,6 +172,82 @@ public class ScanImpl implements Scan {
                 filteredScanFileBatch.getData(),
                 Optional.of(newSelectionVector));
         });
+    }
+
+    private CloseableIterator<FilteredColumnarBatch> applyDataSkipping(
+        TableClient tableClient,
+        CloseableIterator<FilteredColumnarBatch> scanFileIter) {
+
+        Optional<Predicate> dataPredicate = getDataFilters();
+        if (!dataPredicate.isPresent()) { // no data filter
+            return scanFileIter;
+        }
+
+        StructType statsSchema = DataSkippingUtils.getStatsSchema(metadata.getSchema());
+
+        // get data skipping predicates for valid skipping-eligible columns
+        Optional<DataSkippingPredicate> dataFilter = DataSkippingUtils.constructDataFilters(
+            dataPredicate.get(), metadata.getSchema());
+        if (!dataFilter.isPresent()) {
+            return scanFileIter;
+        }
+
+        // NOTE: If any stats are missing, the value of `dataFilters` is untrustworthy -- it could
+        // be NULL or even just plain incorrect. We rely on `verifyStatsForFilter` to be FALSE in
+        // that case, forcing the overall OR to evaluate as TRUE no matter what value `dataFilters`
+        // takes.
+        Predicate verifyStatsFilter = DataSkippingUtils.verifyStatsForFilter(
+            dataFilter.get().referencedStats);
+        Predicate filterToEval = new Or(
+            dataFilter.get().predicate,
+            new Predicate("NOT", verifyStatsFilter) // TODO formally add "NOT" expression
+        );
+
+        logger.info(String.format("dataFilter=%s", dataFilter.get().predicate));
+        logger.info(String.format("verifyStatsFilter=%s", verifyStatsFilter));
+        logger.info(String.format("totalFilter=%s", filterToEval));
+
+        PredicateEvaluator predicateEvaluator = tableClient
+            .getExpressionHandler()
+            .getPredicateEvaluator(statsSchema, filterToEval);
+
+        return filesIter.map(filteredScanFileBatch -> {
+
+            // TODO check isFromCheckpoint more robustly (i.e. empty batches, unselected rows, etc)
+            int isFromCheckpointIdx = filteredScanFileBatch.getData().getSchema()
+                .indexOf("isFromCheckpoint");
+            boolean isFromCheckpoint = filteredScanFileBatch.getData()
+                    .getColumnVector(isFromCheckpointIdx).getBoolean(0);
+            logger.info(String.format("isFromCheckpoint=%s", isFromCheckpoint));
+
+
+            ColumnVector newSelectionVector;
+            if (isFromCheckpoint) {
+                // TODO not all checkpoints will have stats_parsed, need to check for presence and
+                //  default to JSON stats if not
+                ColumnVector statsVector = filteredScanFileBatch.getData()
+                    .getColumnVector(0) // index of add file
+                    .getChild(7); // index of stats_parsed
+                newSelectionVector = predicateEvaluator.eval(
+                    new StructVectorColumnarBatch(statsVector),
+                    filteredScanFileBatch.getSelectionVector());
+            } else {
+                newSelectionVector = predicateEvaluator.eval(
+                    DataSkippingUtils.parseJsonStats(
+                        tableClient,
+                        filteredScanFileBatch.getData(),
+                        statsSchema,
+                        filteredScanFileBatch.getSelectionVector()
+                    ),
+                    filteredScanFileBatch.getSelectionVector());
+            }
+
+            return new FilteredColumnarBatch(
+                filteredScanFileBatch.getData(),
+                Optional.of(newSelectionVector));
+            }
+        );
+
     }
 
     /**

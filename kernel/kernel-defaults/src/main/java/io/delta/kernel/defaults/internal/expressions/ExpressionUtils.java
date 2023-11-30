@@ -46,6 +46,18 @@ class ExpressionUtils {
     }
 
     /**
+     * Utility method that calculates the nullability result from one child vector.
+     */
+    static boolean[] evalNullability(ColumnVector child) {
+        int numRows = child.getSize();
+        boolean[] nullability = new boolean[numRows];
+        for (int rowId = 0; rowId < numRows; rowId++) {
+            nullability[rowId] = child.isNullAt(rowId);
+        }
+        return nullability;
+    }
+
+    /**
      * Utility method to compare the left and right according to the natural ordering
      * and return an integer array where each row contains the comparison result (-1, 0, 1) for
      * corresponding rows in the input vectors compared.

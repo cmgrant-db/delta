@@ -17,6 +17,7 @@
 package io.delta.kernel.client;
 
 import java.io.IOException;
+import java.util.Optional;
 
 import io.delta.kernel.annotation.Evolving;
 import io.delta.kernel.data.ColumnVector;
@@ -47,10 +48,12 @@ public interface JsonHandler
      *                         for that
      *                         particular field in the returned {@link Row}. The type for each given
      *                         field is expected to match the type in the JSON.
+     * @param selectionVector  Optional selection vector indicating which rows to parse the JSON
      * @return a {@link ColumnarBatch} of schema {@code outputSchema} with one row for each entry
      * in {@code jsonStringVector}
      */
-    ColumnarBatch parseJson(ColumnVector jsonStringVector, StructType outputSchema);
+    ColumnarBatch parseJson(ColumnVector jsonStringVector, StructType outputSchema,
+                            Optional<ColumnVector> selectionVector);
 
     /**
      * Deserialize the Delta schema from {@code structTypeJson} according to the Delta Protocol

@@ -213,6 +213,24 @@ public class DefaultExpressionEvaluator implements ExpressionEvaluator {
                 ((MapType) transformedMapInput.outputType).getValueType());
         }
 
+        @Override
+        ExpressionTransformResult visitNot(Predicate predicate) {
+            Predicate child = validateIsPredicate(predicate, visit(predicate.getChildren().get(0)));
+            return new ExpressionTransformResult(
+                new Predicate("NOT", child),
+                BooleanType.BOOLEAN
+            );
+        }
+
+        @Override
+        ExpressionTransformResult visitNotNull(Predicate predicate) {
+            Expression child = visit(predicate.getChildren().get(0)).expression;
+            return new ExpressionTransformResult(
+                new Predicate("ISNOTNULL", child),
+                BooleanType.BOOLEAN
+            );
+        }
+
         private Predicate validateIsPredicate(
             Expression baseExpression,
             ExpressionTransformResult result) {
@@ -258,28 +276,54 @@ public class DefaultExpressionEvaluator implements ExpressionEvaluator {
             this.input = input;
         }
 
+        // TODO add tests for the null semantics
         @Override
         ColumnVector visitAnd(And and) {
             PredicateChildrenEvalResult argResults = evalBinaryExpressionChildren(and);
             int numRows = argResults.rowCount;
             boolean[] result = new boolean[numRows];
-            boolean[] nullability = evalNullability(argResults.leftResult, argResults.rightResult);
+            boolean[] nullability = new boolean[numRows];
             for (int rowId = 0; rowId < numRows; rowId++) {
-                result[rowId] = argResults.leftResult.getBoolean(rowId) &&
-                    argResults.rightResult.getBoolean(rowId);
+                if (argResults.leftResult.isNullAt(rowId)) {
+                    // NULL && NULL --> NULL ; NULL && TRUE --> NULL ; NULL && FALSE --> FALSE
+                    nullability[rowId] = argResults.rightResult.isNullAt(rowId) ||
+                        argResults.rightResult.getBoolean(rowId);
+                    result[rowId] = argResults.rightResult.getBoolean(rowId);
+                } else if (argResults.rightResult.isNullAt(rowId)) {
+                    // TRUE && NULL --> NULL ; FALSE && NULL --> FALSE
+                    nullability[rowId] = argResults.leftResult.getBoolean(rowId);
+                    result[rowId] = argResults.leftResult.getBoolean(rowId);
+                } else {
+                    nullability[rowId] = false;
+                    result[rowId] = argResults.leftResult.getBoolean(rowId) &&
+                        argResults.rightResult.getBoolean(rowId);
+                }
             }
             return new DefaultBooleanVector(numRows, Optional.of(nullability), result);
         }
 
+        // TODO add tests for the null semantics
         @Override
         ColumnVector visitOr(Or or) {
             PredicateChildrenEvalResult argResults = evalBinaryExpressionChildren(or);
             int numRows = argResults.rowCount;
             boolean[] result = new boolean[numRows];
-            boolean[] nullability = evalNullability(argResults.leftResult, argResults.rightResult);
+            boolean[] nullability = new boolean[numRows];
             for (int rowId = 0; rowId < numRows; rowId++) {
-                result[rowId] = argResults.leftResult.getBoolean(rowId) ||
-                    argResults.rightResult.getBoolean(rowId);
+                if (argResults.leftResult.isNullAt(rowId)) {
+                    // NULL || NULL --> NULL ; NULL || FALSE --> NULL ; NULL || TRUE --> TRUE
+                    nullability[rowId] = argResults.rightResult.isNullAt(rowId) ||
+                        !argResults.rightResult.getBoolean(rowId);
+                    result[rowId] = argResults.rightResult.getBoolean(rowId);
+                } else if (argResults.rightResult.isNullAt(rowId)) {
+                    // TRUE || NULL --> TRUE ; FALSE || NULL --> NULL
+                    nullability[rowId] = !argResults.leftResult.getBoolean(rowId);
+                    result[rowId] = argResults.leftResult.getBoolean(rowId);
+                } else {
+                    nullability[rowId] = false;
+                    result[rowId] = argResults.leftResult.getBoolean(rowId) ||
+                        argResults.rightResult.getBoolean(rowId);
+                }
             }
             return new DefaultBooleanVector(numRows, Optional.of(nullability), result);
         }
@@ -397,6 +441,29 @@ public class DefaultExpressionEvaluator implements ExpressionEvaluator {
             ColumnVector map = visit(childAt(elementAt, 0));
             ColumnVector lookupKey = visit(childAt(elementAt, 1));
             return ElementAtEvaluator.eval(map, lookupKey);
+        }
+
+        @Override
+        ColumnVector visitNot(Predicate predicate) {
+            ColumnVector childResult = visit(childAt(predicate, 0));
+            int numRows = childResult.getSize();
+            boolean[] result = new boolean[numRows];
+            boolean[] nullability = evalNullability(childResult);
+            for (int rowId = 0; rowId < numRows; rowId++) {
+                result[rowId] = !childResult.getBoolean(rowId);
+            }
+            return new DefaultBooleanVector(numRows, Optional.of(nullability), result);
+        }
+
+        @Override
+        ColumnVector visitNotNull(Predicate predicate) {
+            ColumnVector childResult = visit(childAt(predicate, 0));
+            int numRows = childResult.getSize();
+            boolean[] result = new boolean[numRows];
+            for (int rowId = 0; rowId < numRows; rowId++) {
+                result[rowId] = !childResult.isNullAt(rowId);
+            }
+            return new DefaultBooleanVector(numRows, Optional.empty(), result);
         }
 
         /**
