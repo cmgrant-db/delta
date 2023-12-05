@@ -276,7 +276,6 @@ public class DefaultExpressionEvaluator implements ExpressionEvaluator {
             this.input = input;
         }
 
-        // TODO add tests for the null semantics
         @Override
         ColumnVector visitAnd(And and) {
             PredicateChildrenEvalResult argResults = evalBinaryExpressionChildren(and);
@@ -302,7 +301,6 @@ public class DefaultExpressionEvaluator implements ExpressionEvaluator {
             return new DefaultBooleanVector(numRows, Optional.of(nullability), result);
         }
 
-        // TODO add tests for the null semantics
         @Override
         ColumnVector visitOr(Or or) {
             PredicateChildrenEvalResult argResults = evalBinaryExpressionChildren(or);

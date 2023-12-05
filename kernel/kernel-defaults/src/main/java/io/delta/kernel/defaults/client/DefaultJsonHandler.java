@@ -73,7 +73,7 @@ public class DefaultJsonHandler
         for (int i = 0; i < jsonStringVector.getSize(); i++) {
             boolean isSelected = !selectionVector.isPresent() ||
                 (!selectionVector.get().isNullAt(i) && selectionVector.get().getBoolean(i));
-            if (isSelected) {
+            if (isSelected && !jsonStringVector.isNullAt(i)) {
                 rows.add(parseJson(jsonStringVector.getString(i), outputSchema));
             } else {
                 rows.add(null);

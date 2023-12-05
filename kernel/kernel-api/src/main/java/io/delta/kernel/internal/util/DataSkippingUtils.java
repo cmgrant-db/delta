@@ -55,6 +55,9 @@ public class DataSkippingUtils {
      *         Otherwise, return None.
      */
     private static boolean isSkippingEligibleColumn(Column column, StructType dataSchema) {
+        // TODO do we need to data type checks somehow? currently not supported by Column expr
+        // TODO verify that column exists (gather all leaf columns before hand?)
+
         // TODO check that is of AtomicType (not null, array, struct or map)
         return true;
     }
