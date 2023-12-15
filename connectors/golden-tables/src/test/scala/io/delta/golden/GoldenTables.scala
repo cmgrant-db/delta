@@ -30,7 +30,7 @@ import org.apache.hadoop.fs.Path
 
 import org.apache.spark.SparkConf
 import org.apache.spark.network.util.JavaUtils
-import org.apache.spark.sql.{QueryTest, Row}
+import org.apache.spark.sql.{DataFrame, QueryTest, Row}
 import org.apache.spark.sql.delta.{DeltaConfigs, DeltaLog, OptimisticTransaction}
 import org.apache.spark.sql.delta.DeltaOperations.ManualUpdate
 import org.apache.spark.sql.delta.actions.{Metadata, _}
@@ -1348,6 +1348,32 @@ class GoldenTables extends QueryTest with SharedSparkSession {
       )
     }
   }
+
+  generateGoldenTable("checkpoint-test") { path =>
+    withSQLConf(
+      (DeltaConfigs.CHECKPOINT_WRITE_STATS_AS_STRUCT.defaultTablePropertyKey -> "false"),
+      (DeltaConfigs.CHECKPOINT_WRITE_STATS_AS_JSON.defaultTablePropertyKey -> "true"),
+      (DeltaConfigs.CHECKPOINT_INTERVAL.defaultTablePropertyKey -> "1")
+    ) {
+      def dfWithSchema(rows: Seq[Row], schema: StructType): DataFrame = {
+        spark.createDataFrame(spark.sparkContext.parallelize(rows), schema)
+      }
+      val schema = new StructType()
+        .add("as_int", IntegerType)
+        .add("as_string", StringType)
+        .add("as_float", DoubleType)
+      dfWithSchema(Row(1, "one", 1.1) :: Row(2, "two", 2.2) :: Nil, schema).write
+        .format("delta")
+        .mode("append")
+        .save(path)
+      dfWithSchema(Row(5, "five", 5.5) :: Row(6, "size", 6.6) :: Nil, schema).write
+        .format("delta")
+        .mode("append")
+        .save(path)
+    }
+  }
+
+
 }
 
 case class TestStruct(f1: String, f2: Long)
