@@ -55,6 +55,10 @@ abstract class ExpressionVisitor<R> {
 
     abstract R visitIsNotNull(Predicate predicate);
 
+    abstract R visitIfNull(ScalarExpression ifNull);
+
+    abstract R visitIsNull(Predicate predicate);
+
     final R visit(Expression expression) {
         if (expression instanceof PartitionValueExpression) {
             return visitPartitionValue((PartitionValueExpression) expression);
@@ -97,6 +101,10 @@ abstract class ExpressionVisitor<R> {
                 return visitNot(new Predicate(name, children));
             case "IS_NOT_NULL":
                 return visitIsNotNull(new Predicate(name, children));
+            case "IF_NULL":
+                return visitIfNull(expression);
+            case "IS_NULL":
+                return visitIsNull(new Predicate(name, children));
             default:
                 throw new UnsupportedOperationException(
                     String.format("Scalar expression `%s` is not supported.", name));

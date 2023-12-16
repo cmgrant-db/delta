@@ -38,10 +38,17 @@ import io.delta.kernel.annotation.Evolving;
  *       <li>Since version: 3.0.0</li>
  *     </ul>
  *   </li>
- * </ol>
+ *  TODO sql semantics?
+ *  <li>Name: <code>IF_NULL</code>
+ *   <ul>
+ *    <li>SQL semantic: <code>expr1 IF NULL expr2</code></li>
+ *    <li>Since version: 3.1.0</li>
+ *   </ul>
+ *  </li> * </ol>
  *
  * @since 3.0.0
  */
+// NULLIF(skip, true); IFNULL(skip, true); COALESCE(skip, true)
 @Evolving
 public class ScalarExpression implements Expression {
     protected final String name;

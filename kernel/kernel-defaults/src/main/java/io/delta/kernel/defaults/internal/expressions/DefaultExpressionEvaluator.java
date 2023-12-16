@@ -15,6 +15,7 @@
  */
 package io.delta.kernel.defaults.internal.expressions;
 
+import java.util.Arrays;
 import java.util.Optional;
 import static java.lang.String.format;
 import static java.util.Objects.requireNonNull;
@@ -213,6 +214,7 @@ public class DefaultExpressionEvaluator implements ExpressionEvaluator {
                 ((MapType) transformedMapInput.outputType).getValueType());
         }
 
+        // TODO factor out to helper functions
         @Override
         ExpressionTransformResult visitNot(Predicate predicate) {
             Predicate child = validateIsPredicate(predicate, visit(predicate.getChildren().get(0)));
@@ -223,6 +225,39 @@ public class DefaultExpressionEvaluator implements ExpressionEvaluator {
 
         @Override
         ExpressionTransformResult visitIsNotNull(Predicate predicate) {
+            Expression child = visit(predicate.getChildren().get(0)).expression;
+            return new ExpressionTransformResult(
+                new Predicate(predicate.getName(), child),
+                BooleanType.BOOLEAN
+            );
+        }
+
+        @Override
+        ExpressionTransformResult visitIfNull(ScalarExpression ifNull) {
+            ExpressionTransformResult leftResult = visit(getLeft(ifNull));
+            ExpressionTransformResult rightResult = visit(getRight(ifNull));
+            Expression left = leftResult.expression;
+            Expression right = rightResult.expression;
+            // TODO test casting
+            if (!leftResult.outputType.equivalent(rightResult.outputType)) {
+                // only cast right to left type
+                if (canCastTo(rightResult.outputType, leftResult.outputType)) {
+                    right = new ImplicitCastExpression(right, leftResult.outputType);
+                } else {
+                    String msg = format("%s: operands are of different types which are not " +
+                            "castable: left type=%s, right type=%s",
+                        ifNull, leftResult.outputType, rightResult.outputType);
+                    throw new UnsupportedOperationException(msg);
+                }
+            }
+            return new ExpressionTransformResult(
+                new ScalarExpression("IF_NULL", Arrays.asList(left, right)),
+                leftResult.outputType
+            );
+        }
+
+        @Override
+        ExpressionTransformResult visitIsNull(Predicate predicate) {
             Expression child = visit(predicate.getChildren().get(0)).expression;
             return new ExpressionTransformResult(
                 new Predicate(predicate.getName(), child),
@@ -290,7 +325,7 @@ public class DefaultExpressionEvaluator implements ExpressionEvaluator {
          */
         @Override
         ColumnVector visitAnd(And and) {
-            PredicateChildrenEvalResult argResults = evalBinaryExpressionChildren(and);
+            BinaryChildrenEvalResult argResults = evalBinaryExpressionChildren(and);
             ColumnVector left = argResults.leftResult;
             ColumnVector right = argResults.rightResult;
             int numRows = argResults.rowCount;
@@ -318,7 +353,7 @@ public class DefaultExpressionEvaluator implements ExpressionEvaluator {
 
         @Override
         ColumnVector visitOr(Or or) {
-            PredicateChildrenEvalResult argResults = evalBinaryExpressionChildren(or);
+            BinaryChildrenEvalResult argResults = evalBinaryExpressionChildren(or);
             ColumnVector left = argResults.leftResult;
             ColumnVector right = argResults.rightResult;
             int numRows = argResults.rowCount;
@@ -356,7 +391,7 @@ public class DefaultExpressionEvaluator implements ExpressionEvaluator {
 
         @Override
         ColumnVector visitComparator(Predicate predicate) {
-            PredicateChildrenEvalResult argResults = evalBinaryExpressionChildren(predicate);
+            BinaryChildrenEvalResult argResults = evalBinaryExpressionChildren(predicate);
 
             int numRows = argResults.rowCount;
             boolean[] result = new boolean[numRows];
@@ -479,34 +514,56 @@ public class DefaultExpressionEvaluator implements ExpressionEvaluator {
             );
         }
 
+        @Override
+        ColumnVector visitIfNull(ScalarExpression ifNull) {
+            BinaryChildrenEvalResult argResults = evalBinaryExpressionChildren(ifNull);
+            return ExpressionUtils.leftOrRight(
+                argResults.leftResult.getDataType(),
+                argResults.leftResult,
+                argResults.rightResult,
+                rowId -> !argResults.leftResult.isNullAt(rowId)
+            );
+        }
+
+        @Override
+        ColumnVector visitIsNull(Predicate predicate) {
+            ColumnVector childResult = visit(childAt(predicate, 0));
+            return booleanWrapperVector(
+                childResult,
+                rowId -> childResult.isNullAt(rowId),
+                rowId -> false
+            );
+        }
+
         /**
          * Utility method to evaluate inputs to the binary input expression. Also validates the
          * evaluated expression result {@link ColumnVector}s are of the same size.
          *
-         * @param predicate
+         * @param expression
          * @return Triplet of (result vector size, left operand result, left operand result)
          */
-        private PredicateChildrenEvalResult evalBinaryExpressionChildren(Predicate predicate) {
-            ColumnVector left = visit(getLeft(predicate));
-            ColumnVector right = visit(getRight(predicate));
+        private BinaryChildrenEvalResult evalBinaryExpressionChildren(
+            ScalarExpression expression) {
+            ColumnVector left = visit(getLeft(expression));
+            ColumnVector right = visit(getRight(expression));
             checkArgument(
                 left.getSize() == right.getSize(),
                 "Left and right operand returned different results: left=%d, right=d",
                 left.getSize(),
                 right.getSize());
-            return new PredicateChildrenEvalResult(left.getSize(), left, right);
+            return new BinaryChildrenEvalResult(left.getSize(), left, right);
         }
     }
 
     /**
      * Encapsulates children expression result of binary input predicate
      */
-    private static class PredicateChildrenEvalResult {
+    private static class BinaryChildrenEvalResult {
         public final int rowCount;
         public final ColumnVector leftResult;
         public final ColumnVector rightResult;
 
-        PredicateChildrenEvalResult(
+        BinaryChildrenEvalResult(
             int rowCount, ColumnVector leftResult, ColumnVector rightResult) {
             this.rowCount = rowCount;
             this.leftResult = leftResult;

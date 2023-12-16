@@ -241,6 +241,39 @@ class DefaultExpressionEvaluatorSuite extends AnyFunSuite with ExpressionSuiteBa
     checkBooleanVectors(actOutputVector, expOutputVector)
   }
 
+  test("evaluate expression: is null") {
+    val childColumn = booleanVector(Seq[BooleanJ](true, false, null))
+
+    val schema = new StructType().add("child", BooleanType.BOOLEAN)
+    val batch = new DefaultColumnarBatch(childColumn.getSize, schema, Array(childColumn))
+
+    val isNullExpression = new Predicate("IS_NULL", new Column("child"))
+    val expOutputVector = booleanVector(Seq[BooleanJ](false, false, true))
+    val actOutputVector = evaluator(schema, isNullExpression, BooleanType.BOOLEAN).eval(batch)
+    checkBooleanVectors(actOutputVector, expOutputVector)
+  }
+
+  test("evaluate expression: if null") {
+    // TODO test other types and casting
+    val leftColumn = booleanVector(Seq[BooleanJ](true, false, null, null))
+    val rightColumn = booleanVector(Seq[BooleanJ](false, false, true, null))
+
+    val schema = new StructType()
+      .add("left", BooleanType.BOOLEAN)
+      .add("right", BooleanType.BOOLEAN)
+
+    val batch = new DefaultColumnarBatch(leftColumn.getSize, schema, Array(leftColumn, rightColumn))
+
+    val ifNullExpression = new Predicate(
+      "IF_NULL",
+      new Column("left"),
+      new Column("right")
+    )
+    val expOutputVector = booleanVector(Seq[BooleanJ](true, false, true, null))
+    val actOutputVector = evaluator(schema, ifNullExpression, BooleanType.BOOLEAN).eval(batch)
+    checkBooleanVectors(actOutputVector, expOutputVector)
+  }
+
   test("evaluate expression: comparators (=, <, <=, >, >=)") {
     // Literals for each data type from the data type value range, used as inputs to comparator
     // (small, big, small, null)

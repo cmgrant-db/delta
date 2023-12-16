@@ -21,7 +21,9 @@ import java.util.List;
 import java.util.function.Function;
 import static java.lang.String.format;
 
+import io.delta.kernel.data.ArrayValue;
 import io.delta.kernel.data.ColumnVector;
+import io.delta.kernel.data.MapValue;
 import io.delta.kernel.expressions.Expression;
 import io.delta.kernel.types.*;
 
@@ -241,5 +243,106 @@ class ExpressionUtils {
 
     static Expression childAt(Expression expression, int index) {
         return expression.getChildren().get(index);
+    }
+
+    static ColumnVector leftOrRight(
+        DataType dataType,
+        ColumnVector left,
+        ColumnVector right,
+        Function<Integer, Boolean> returnLeft) {
+        return new ColumnVector() {
+
+            @Override
+            public DataType getDataType() {
+                return dataType;
+            }
+
+            @Override
+            public int getSize() {
+                return left.getSize();
+            }
+
+            @Override
+            public void close() {
+                left.close();
+                right.close();
+            }
+
+            @Override
+            public boolean isNullAt(int rowId) {
+                return returnLeft.apply(rowId) ? left.isNullAt(rowId) : right.isNullAt(rowId);
+            }
+
+            @Override
+            public boolean getBoolean(int rowId) {
+                return returnLeft.apply(rowId) ? left.getBoolean(rowId) : right.getBoolean(rowId);
+            }
+
+            @Override
+            public byte getByte(int rowId) {
+                return returnLeft.apply(rowId) ? left.getByte(rowId) : right.getByte(rowId);
+            }
+
+            @Override
+            public short getShort(int rowId) {
+                return returnLeft.apply(rowId) ? left.getShort(rowId) : right.getShort(rowId);
+            }
+
+            @Override
+            public int getInt(int rowId) {
+                return returnLeft.apply(rowId) ? left.getInt(rowId) : right.getInt(rowId);
+            }
+
+            @Override
+            public long getLong(int rowId) {
+                return returnLeft.apply(rowId) ? left.getLong(rowId) : right.getLong(rowId);
+            }
+
+            @Override
+            public float getFloat(int rowId) {
+                return returnLeft.apply(rowId) ? left.getFloat(rowId) : right.getFloat(rowId);
+            }
+
+            @Override
+            public double getDouble(int rowId) {
+                return returnLeft.apply(rowId) ? left.getDouble(rowId) : right.getDouble(rowId);
+            }
+
+            @Override
+            public byte[] getBinary(int rowId) {
+                return returnLeft.apply(rowId) ? left.getBinary(rowId) : right.getBinary(rowId);
+            }
+
+            @Override
+            public String getString(int rowId) {
+                return returnLeft.apply(rowId) ? left.getString(rowId) : right.getString(rowId);
+            }
+
+            @Override
+            public BigDecimal getDecimal(int rowId) {
+                return returnLeft.apply(rowId) ? left.getDecimal(rowId) : right.getDecimal(rowId);
+            }
+
+            @Override
+            public MapValue getMap(int rowId) {
+                return returnLeft.apply(rowId) ? left.getMap(rowId) : right.getMap(rowId);
+            }
+
+            @Override
+            public ArrayValue getArray(int rowId) {
+                return returnLeft.apply(rowId) ? left.getArray(rowId) : right.getArray(rowId);
+            }
+
+            @Override
+            public ColumnVector getChild(int ordinal) {
+                // TODO test this?
+                return leftOrRight(
+                    left.getChild(ordinal).getDataType(),
+                    left.getChild(ordinal),
+                    right.getChild(ordinal),
+                    returnLeft
+                );
+            }
+        };
     }
 }
