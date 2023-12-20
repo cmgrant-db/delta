@@ -54,8 +54,10 @@ public class InternalScanFileUtils {
         TABLE_ROOT_DATA_TYPE,
         false /* nullable */);
 
+    // TODO we REALLY need a better way to organize these schemas and indices!!
+
     public static final StructType SCAN_FILE_SCHEMA = new StructType()
-        .add("add", AddFile.SCHEMA)
+        .add("add", AddFile.SCHEMA_WITHOUT_STATS)
         // NOTE: table root is temporary, until the path in `add.path` is converted to
         // an absolute path. https://github.com/delta-io/delta/issues/2089
         .add(TABLE_ROOT_COL_NAME, TABLE_ROOT_DATA_TYPE);
@@ -137,7 +139,7 @@ public class InternalScanFileUtils {
      */
     public static Row generateScanFileRow(FileStatus fileStatus) {
         Row addFile = new GenericRow(
-            ADD_FILE_SCHEMA,
+            AddFile.SCHEMA_WITHOUT_STATS,
             new HashMap<Integer, Object>() {
                 {
                     put(ADD_FILE_PATH_ORDINAL, fileStatus.getPath());

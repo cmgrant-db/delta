@@ -61,34 +61,27 @@ public class LogReplay {
         .add("protocol", Protocol.READ_SCHEMA)
         .add("metaData", Metadata.READ_SCHEMA);
 
-    /**
-     * Read schema when searching for all the active AddFiles (need some RemoveFile info, too).
-     * Note that we don't need to read the entire RemoveFile, only the path and dv info.
-     */
-    public static final StructType ADD_REMOVE_READ_SCHEMA = new StructType()
-        // TODO: further restrict the fields to read from AddFile depending upon
-        // the whether stats are needed or not: https://github.com/delta-io/delta/issues/1961
-        .add("add", AddFile.SCHEMA)
-        .add("remove", new StructType()
-            .add("path", StringType.STRING, false /* nullable */)
-            .add("deletionVector", DeletionVectorDescriptor.READ_SCHEMA, true /* nullable */)
-        );
+    private static StructType getAddSchema(boolean shouldReadStats) {
+        return shouldReadStats ? AddFile.SCHEMA_WITH_STATS :
+            AddFile.SCHEMA_WITHOUT_STATS;
+    }
 
-    public static int ADD_FILE_ORDINAL = ADD_REMOVE_READ_SCHEMA.indexOf("add");
-    public static int ADD_FILE_PATH_ORDINAL =
-        ((StructType) ADD_REMOVE_READ_SCHEMA.get("add").getDataType()).indexOf("path");
-    public static int ADD_FILE_DV_ORDINAL =
-        ((StructType) ADD_REMOVE_READ_SCHEMA.get("add").getDataType()).indexOf("deletionVector");
+    public static StructType getAddRemoveReadSchema(boolean shouldReadStats) {
+        return new StructType()
+            .add("add", getAddSchema(shouldReadStats))
+            .add("remove", new StructType()
+                .add("path", StringType.STRING, false /* nullable */)
+                .add("deletionVector", DeletionVectorDescriptor.READ_SCHEMA, true /* nullable */)
+            );
+    }
 
-    public static int REMOVE_FILE_ORDINAL = ADD_REMOVE_READ_SCHEMA.indexOf("remove");
-    public static int REMOVE_FILE_PATH_ORDINAL =
-        ((StructType) ADD_REMOVE_READ_SCHEMA.get("remove").getDataType()).indexOf("path");
-    public static int REMOVE_FILE_DV_ORDINAL =
-        ((StructType) ADD_REMOVE_READ_SCHEMA.get("remove").getDataType()).indexOf("deletionVector");
+    public static int ADD_FILE_ORDINAL = 0;
+    public static int ADD_FILE_PATH_ORDINAL = 0;
+    public static int ADD_FILE_DV_ORDINAL = 5;
 
-    /** Data (result) schema of the remaining active AddFiles. */
-    public static final StructType ADD_ONLY_DATA_SCHEMA = new StructType()
-        .add("add", AddFile.SCHEMA);
+    public static int REMOVE_FILE_ORDINAL = 1;
+    public static int REMOVE_FILE_PATH_ORDINAL = 0;
+    public static int REMOVE_FILE_DV_ORDINAL = 1;
 
     private final Path dataPath;
     private final LogSegment logSegment;
@@ -125,12 +118,14 @@ public class LogReplay {
      * Returns an iterator of {@link FilteredColumnarBatch} with schema
      * {@link #ADD_ONLY_DATA_SCHEMA} representing all the active AddFiles in the table
      */
-    public CloseableIterator<FilteredColumnarBatch> getAddFilesAsColumnarBatches() {
+    public CloseableIterator<FilteredColumnarBatch> getAddFilesAsColumnarBatches(
+        boolean shouldReadStats) {
+
         final CloseableIterator<Tuple2<FileDataReadResult, Boolean>> addRemoveIter =
             new ActionsIterator(
                 tableClient,
                 logSegment.allLogFilesReversed(),
-                ADD_REMOVE_READ_SCHEMA);
+                getAddRemoveReadSchema(shouldReadStats));
         return new ActiveAddFilesIterator(tableClient, addRemoveIter, dataPath);
     }
 

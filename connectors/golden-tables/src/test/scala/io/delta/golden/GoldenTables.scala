@@ -1373,6 +1373,28 @@ class GoldenTables extends QueryTest with SharedSparkSession {
     }
   }
 
+  generateGoldenTable("stats-with-array") { tablePath =>
+
+    val schema = new StructType()
+      .add("as_int", IntegerType)
+      .add("as_long", LongType)
+      .add("as_array", ArrayType(IntegerType))
+
+    writeDataWithSchema(
+      tablePath,
+      Row(0, 0.longValue, Array()) ::
+        Row(10, 10.longValue, Array(1, 2)) :: Nil,
+      schema
+    )
+
+    writeDataWithSchema(
+      tablePath,
+      Row(50, 50.longValue, Array(1)) ::
+        Row(50, 50.longValue, null) :: Nil,
+      schema
+    )
+  }
+
 
 }
 

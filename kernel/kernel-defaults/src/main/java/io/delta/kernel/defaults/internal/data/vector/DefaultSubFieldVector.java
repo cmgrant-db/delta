@@ -163,7 +163,13 @@ public class DefaultSubFieldVector implements ColumnVector {
                 size,
                 childField.getDataType(),
                 childOrdinal,
-                (rowId) -> (rowIdToRowAccessor.apply(rowId).getStruct(columnOrdinal)));
+                (rowId) -> {
+                    if (isNullAt(rowId)) {
+                        return null;
+                    } else {
+                        return rowIdToRowAccessor.apply(rowId).getStruct(columnOrdinal);
+                    }
+                });
     }
 
     private void assertValidRowId(int rowId) {

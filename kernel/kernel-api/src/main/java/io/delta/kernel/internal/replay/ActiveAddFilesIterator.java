@@ -149,7 +149,8 @@ class ActiveAddFilesIterator implements CloseableIterator<FilteredColumnarBatch>
         final boolean isFromCheckpoint = _next._2;
         final ColumnarBatch addRemoveColumnarBatch = fileDataReadResult.getData();
 
-        assert (addRemoveColumnarBatch.getSchema().equals(LogReplay.ADD_REMOVE_READ_SCHEMA));
+        // TODO pass expected schema forward?
+        // assert (addRemoveColumnarBatch.getSchema().equals(LogReplay.ADD_REMOVE_READ_SCHEMA));
 
         // Step 1: Update `tombstonesFromJson` with all the RemoveFiles in this columnar batch, if
         //         and only if this batch is not from a checkpoint.

@@ -56,9 +56,7 @@ public class InternalSchemaUtils {
                     } else {
                         newType = oldType;
                     }
-                    String physicalName = (String) fieldFromMetadata
-                        .getMetadata()
-                        .get("delta.columnMapping.physicalName");
+                    String physicalName = getPhysicalName(fieldFromMetadata);
                     newSchema = newSchema.add(physicalName, newType);
                 }
                 return newSchema;
@@ -66,6 +64,16 @@ public class InternalSchemaUtils {
             default:
                 throw new UnsupportedOperationException(
                     "Unsupported column mapping mode: " + columnMappingMode);
+        }
+    }
+
+    public static String getPhysicalName(StructField field) {
+        if (field.getMetadata().contains("delta.columnMapping.physicalName")) {
+            return (String) field
+                .getMetadata()
+                .get("delta.columnMapping.physicalName");
+        } else {
+            return field.getName();
         }
     }
 }

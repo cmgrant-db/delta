@@ -22,6 +22,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.NoSuchElementException;
+import java.util.Optional;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -34,10 +35,7 @@ import org.apache.hadoop.fs.Path;
 
 import io.delta.kernel.client.FileReadContext;
 import io.delta.kernel.client.JsonHandler;
-import io.delta.kernel.data.ColumnVector;
-import io.delta.kernel.data.ColumnarBatch;
-import io.delta.kernel.data.FileDataReadResult;
-import io.delta.kernel.data.Row;
+import io.delta.kernel.data.*;
 import io.delta.kernel.types.StructType;
 import io.delta.kernel.utils.CloseableIterator;
 import io.delta.kernel.utils.FileStatus;
@@ -69,10 +67,17 @@ public class DefaultJsonHandler
     }
 
     @Override
-    public ColumnarBatch parseJson(ColumnVector jsonStringVector, StructType outputSchema) {
+    public ColumnarBatch parseJson(ColumnVector jsonStringVector, StructType outputSchema,
+                                   Optional<ColumnVector> selectionVector) {
         List<Row> rows = new ArrayList<>();
         for (int i = 0; i < jsonStringVector.getSize(); i++) {
-            rows.add(parseJson(jsonStringVector.getString(i), outputSchema));
+            boolean isSelected = !selectionVector.isPresent() ||
+                (!selectionVector.get().isNullAt(i) && selectionVector.get().getBoolean(i));
+            if (isSelected && !jsonStringVector.isNullAt(i)) {
+                rows.add(parseJson(jsonStringVector.getString(i), outputSchema));
+            } else {
+                rows.add(null);
+            }
         }
         return new DefaultRowBasedColumnarBatch(outputSchema, rows);
     }

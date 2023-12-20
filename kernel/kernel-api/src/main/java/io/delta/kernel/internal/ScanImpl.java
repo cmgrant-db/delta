@@ -15,14 +15,19 @@
  */
 package io.delta.kernel.internal;
 
+import java.io.IOException;
 import java.util.*;
 import static java.util.stream.Collectors.toMap;
+
+import io.delta.kernel.expressions.*;
+import io.delta.kernel.internal.skipping.DataSkippingPredicate;
+import io.delta.kernel.internal.skipping.DataSkippingUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import io.delta.kernel.Scan;
 import io.delta.kernel.client.TableClient;
 import io.delta.kernel.data.*;
-import io.delta.kernel.expressions.Predicate;
-import io.delta.kernel.expressions.PredicateEvaluator;
 import io.delta.kernel.types.DataType;
 import io.delta.kernel.types.StructType;
 import io.delta.kernel.utils.CloseableIterator;
@@ -31,9 +36,8 @@ import io.delta.kernel.internal.actions.Metadata;
 import io.delta.kernel.internal.actions.Protocol;
 import io.delta.kernel.internal.data.ScanStateRow;
 import io.delta.kernel.internal.fs.Path;
-import io.delta.kernel.internal.util.InternalSchemaUtils;
-import io.delta.kernel.internal.util.PartitionUtils;
-import io.delta.kernel.internal.util.Tuple2;
+import io.delta.kernel.internal.replay.LogReplay;
+import io.delta.kernel.internal.util.*;
 import static io.delta.kernel.internal.util.PartitionUtils.rewritePartitionPredicateOnScanFileSchema;
 import static io.delta.kernel.internal.util.Preconditions.checkArgument;
 
@@ -41,6 +45,9 @@ import static io.delta.kernel.internal.util.Preconditions.checkArgument;
  * Implementation of {@link Scan}
  */
 public class ScanImpl implements Scan {
+
+    private static final Logger logger = LoggerFactory.getLogger(ScanImpl.class);
+
     /**
      * Schema of the snapshot from the Delta log being scanned in this scan. It is a logical schema
      * with metadata properties to derive the physical schema.
@@ -51,7 +58,7 @@ public class ScanImpl implements Scan {
     private final StructType readSchema;
     private final Protocol protocol;
     private final Metadata metadata;
-    private final CloseableIterator<FilteredColumnarBatch> filesIter;
+    private final LogReplay logReplay;
     private final Path dataPath;
     private final Optional<Tuple2<Predicate, Predicate>> partitionAndDataFilters;
     // Partition column names in lower case.
@@ -63,14 +70,14 @@ public class ScanImpl implements Scan {
             StructType readSchema,
             Protocol protocol,
             Metadata metadata,
-            CloseableIterator<FilteredColumnarBatch> filesIter,
+            LogReplay logReplay,
             Optional<Predicate> filter,
             Path dataPath) {
         this.snapshotSchema = snapshotSchema;
         this.readSchema = readSchema;
         this.protocol = protocol;
         this.metadata = metadata;
-        this.filesIter = filesIter;
+        this.logReplay = logReplay;
         this.partitionColumnNames = loadPartitionColNames(); // must be called before `splitFilters`
         this.partitionAndDataFilters = splitFilters(filter);
         this.dataPath = dataPath;
@@ -88,7 +95,26 @@ public class ScanImpl implements Scan {
         }
         accessedScanFiles = true;
 
-        return applyPartitionPruning(tableClient, filesIter);
+        // Generate data skipping filter and decide if we should read the stats column
+        Optional<DataSkippingPredicate> dataFilter = getDataSkippingPredicate();
+        boolean shouldReadStats = dataFilter.isPresent();
+
+        // Get active AddFiles via log replay
+        CloseableIterator<FilteredColumnarBatch> scanFileIter =
+            logReplay.getAddFilesAsColumnarBatches(shouldReadStats);
+
+        // Apply partition pruning
+        scanFileIter = applyPartitionPruning(tableClient, scanFileIter);
+
+        // Apply data skipping
+        if (shouldReadStats) {
+            // there was a usable data skipping filter --> apply data skipping
+            scanFileIter = applyDataSkipping(tableClient, scanFileIter, dataFilter);
+            // TODO drop stats column
+            return scanFileIter;
+        } else {
+            return scanFileIter;
+        }
     }
 
     @Override
@@ -152,19 +178,93 @@ public class ScanImpl implements Scan {
             partitionPredicate.get(),
             partitionColNameToTypeMap);
 
-        PredicateEvaluator predicateEvaluator =
-            tableClient.getExpressionHandler().getPredicateEvaluator(
-                InternalScanFileUtils.SCAN_FILE_SCHEMA,
-                predicateOnScanFileBatch);
+        return new CloseableIterator<FilteredColumnarBatch>() {
+            PredicateEvaluator predicateEvaluator = null;
 
-        return filesIter.map(filteredScanFileBatch -> {
+            @Override
+            public boolean hasNext() {
+                return scanFileIter.hasNext();
+            }
+
+            @Override
+            public FilteredColumnarBatch next() {
+                FilteredColumnarBatch next = scanFileIter.next();
+                if (predicateEvaluator == null) {
+                    predicateEvaluator =
+                        tableClient.getExpressionHandler().getPredicateEvaluator(
+                            next.getData().getSchema(),
+                            predicateOnScanFileBatch);
+                }
+                ColumnVector newSelectionVector = predicateEvaluator.eval(
+                    next.getData(),
+                    next.getSelectionVector());
+                return new FilteredColumnarBatch(
+                    next.getData(),
+                    Optional.of(newSelectionVector));
+            }
+
+            @Override
+            public void close() throws IOException {
+                scanFileIter.close();
+            }
+        };
+    }
+
+    private Optional<DataSkippingPredicate> getDataSkippingPredicate() {
+        Optional<Predicate> dataPredicate = getDataFilters();
+        if (!dataPredicate.isPresent()) { // no data filter
+            return Optional.empty();
+        }
+        return DataSkippingUtils.constructDataFilters(dataPredicate.get(), metadata.getSchema());
+    }
+
+    private CloseableIterator<FilteredColumnarBatch> applyDataSkipping(
+        TableClient tableClient,
+        CloseableIterator<FilteredColumnarBatch> scanFileIter,
+        Optional<DataSkippingPredicate> dataFilter) {
+        // get stats schema
+        // TODO prune stats schema according to data filter
+        StructType statsSchema = DataSkippingUtils.getStatsSchema(metadata.getSchema());
+
+        if (!dataFilter.isPresent()) {
+            return scanFileIter;
+        }
+
+        // Skipping happens in several steps:
+        //
+        // 1. The predicate produces false for any file whose stats prove we can safely skip it. A
+        //    value of true means the stats say we must keep the file, and null means we could not
+        //    determine whether the file is safe to skip, because its stats were missing/null.
+        //
+        // 2. The ifNull(skip, true) converts null (= keep) to true
+        Predicate filterToEval = new Predicate(
+            "=",
+            new ScalarExpression(
+                "IF_NULL",
+                Arrays.asList(dataFilter.get().predicate, Literal.ofBoolean(true))),
+            AlwaysTrue.ALWAYS_TRUE);
+        logger.info(String.format("totalFilter=%s", filterToEval));
+
+        PredicateEvaluator predicateEvaluator = tableClient
+            .getExpressionHandler()
+            .getPredicateEvaluator(statsSchema, filterToEval);
+
+        return scanFileIter.map(filteredScanFileBatch -> {
+
             ColumnVector newSelectionVector = predicateEvaluator.eval(
-                filteredScanFileBatch.getData(),
+                DataSkippingUtils.parseJsonStats(
+                    tableClient,
+                    filteredScanFileBatch.getData(),
+                    statsSchema,
+                    filteredScanFileBatch.getSelectionVector()
+                ),
                 filteredScanFileBatch.getSelectionVector());
+
             return new FilteredColumnarBatch(
                 filteredScanFileBatch.getData(),
                 Optional.of(newSelectionVector));
-        });
+            }
+        );
     }
 
     /**
