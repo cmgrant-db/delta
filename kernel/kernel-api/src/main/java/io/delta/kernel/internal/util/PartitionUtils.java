@@ -193,6 +193,7 @@ public class PartitionUtils {
         return expression;
     }
 
+    // todo add a test for this fix?
     private static boolean hasNonPartitionColumns(
         List<Expression> children,
         Set<String> partitionColNames) {
@@ -204,7 +205,9 @@ public class PartitionUtils {
                     return true;
                 }
             } else {
-                return hasNonPartitionColumns(child.getChildren(), partitionColNames);
+                if (hasNonPartitionColumns(child.getChildren(), partitionColNames)) {
+                    return true;
+                }
             }
         }
         return false;

@@ -1503,6 +1503,83 @@ class GoldenTables extends QueryTest with SharedSparkSession {
     }
   }
 
+  // just checking generated stats - test with array type / others to come
+  generateGoldenTable("stats-with-array") { tablePath =>
+
+    val schema = new StructType()
+      .add("as_int", IntegerType)
+      .add("as_long", LongType)
+      .add("as_array", ArrayType(IntegerType))
+
+    writeDataWithSchema(
+      tablePath,
+      Row(0, 0.longValue, Array()) ::
+        Row(10, 10.longValue, Array(1, 2)) :: Nil,
+      schema
+    )
+
+    writeDataWithSchema(
+      tablePath,
+      Row(50, 50.longValue, Array(1)) ::
+        Row(50, 50.longValue, null) :: Nil,
+      schema
+    )
+  }
+
+  def writeDataSkippingTable(name: String, data: String): Unit = {
+    // todo what other args does this need?
+    generateGoldenTable(name) { tablePath =>
+      val jsonRecords = data.split("\n").toSeq
+      val reader = spark.read
+      val df = reader.json(jsonRecords.toDS())
+
+      val r = DeltaLog.forTable(spark, tablePath)
+      df.coalesce(1).write.format("delta").save(r.dataPath.toString)
+    }
+  }
+
+  writeDataSkippingTable("data-skipping-top-level-single-1", """{"a": 1}""")
+  writeDataSkippingTable("data-skipping-nested-single-1", """{"a": {"b": 1}}""")
+  writeDataSkippingTable("data-skipping-double-nested-single-1", """{"a": {"b": {"c": 1}}}""")
+  private def longString(str: String) = str * 1000
+  writeDataSkippingTable(
+    "data-skipping-long-strings-long-min",
+    s"""
+       {"a": '${longString("A")}'}
+       {"a": 'B'}
+       {"a": 'C'}
+     """
+  )
+  writeDataSkippingTable(
+    "data-skipping-long-strings-long-max",
+    s"""
+       {"a": 'A'}
+       {"a": 'B'}
+       {"a": '${longString("C")}'}
+     """
+  )
+  writeDataSkippingTable("data-skipping-and-statements-simple",
+    """
+      {"a": 1}
+      {"a": 2}
+    """
+  )
+  writeDataSkippingTable("data-skipping-and-statements-two-fields",
+    """
+      {"a": 1, "b": "2017-09-01"}
+      {"a": 2, "b": "2017-08-31"}
+    """
+  )
+  writeDataSkippingTable("data-skipping-and-statements-one-side-unsupported",
+    """
+      {"a": 10, "b": 10}
+      {"a": 20: "b": 20}
+    """
+  )
+  writeDataSkippingTable("data-skipping-boolean-comparisons", """{"a": false}""")
+
+
+
 
 }
 
