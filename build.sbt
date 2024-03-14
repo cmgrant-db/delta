@@ -302,6 +302,7 @@ lazy val kernelDefaults = (project in file("kernel/kernel-defaults"))
 lazy val kernelSpark = (project in file("kernel-spark"))
   .dependsOn(kernelApi)
   .dependsOn(kernelDefaults)
+  .dependsOn(goldenTables % "test")
   .settings(
     name := "delta-kernel-spark",
     commonSettings,

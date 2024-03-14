@@ -13,22 +13,24 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package io.delta;
 
 import collection.JavaConverters._
+
 import io.delta.utils.SchemaUtils
 import org.apache.hadoop.fs.Path
+
 import org.apache.spark.sql.connector.catalog.{SupportsRead, Table, TableCapability}
 import org.apache.spark.sql.connector.read.ScanBuilder
 import org.apache.spark.sql.types._
 import org.apache.spark.sql.util.CaseInsensitiveStringMap
-
 import io.delta.kernel.defaults.client.DefaultTableClient
+import org.apache.hadoop.conf.Configuration
 
 case class DeltaTable(path: Path) extends Table with SupportsRead {
 
-  lazy val tableClient = new DefaultTableClient()
+  // TODO use spark hadoop conf
+  lazy val tableClient = DefaultTableClient.create(new Configuration())
   lazy val deltaTable = io.delta.kernel.Table.forPath(tableClient, path.toString)
   lazy val snapshot = deltaTable.getLatestSnapshot(tableClient)
 

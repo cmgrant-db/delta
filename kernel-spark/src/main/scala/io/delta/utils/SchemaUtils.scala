@@ -15,41 +15,42 @@
  */
 package io.delta.utils
 
+import collection.JavaConverters._
+
 import org.apache.spark.sql.types._
 
-// TODO update to user Kernel instead of outdated core APIs
 object SchemaUtils {
 
-  def convertFromSparkSchema(schema: StructType): io.delta.core.types.StructType = {
-    new io.delta.core.types.StructType(schema.map { field =>
-      new io.delta.core.types.StructField(field.name,
+  def convertFromSparkSchema(schema: StructType): io.delta.kernel.types.StructType = {
+    new io.delta.kernel.types.StructType(schema.map { field =>
+      new io.delta.kernel.types.StructField(field.name,
         convertFromSparkDatatype(field.dataType), field.nullable)
     }.asJava)
   }
 
-  def convertFromSparkDatatype(dataType: DataType): io.delta.core.types.DataType = {
+  def convertFromSparkDatatype(dataType: DataType): io.delta.kernel.types.DataType = {
     dataType match {
-      case _: StringType => io.delta.core.types.StringType.INSTANCE
-      case _: BooleanType => io.delta.core.types.BooleanType.INSTANCE
-      case _: IntegerType => io.delta.core.types.IntegerType.INSTANCE
-      case _: LongType => io.delta.core.types.LongType.INSTANCE
+      case _: StringType => io.delta.kernel.types.StringType.STRING
+      case _: BooleanType => io.delta.kernel.types.BooleanType.BOOLEAN
+      case _: IntegerType => io.delta.kernel.types.IntegerType.INTEGER
+      case _: LongType => io.delta.kernel.types.LongType.LONG
       case _ => // some primitive types for now
         throw new IllegalArgumentException("unsupported data type")
     }
   }
 
-  def convertToSparkSchema(schema: io.delta.core.types.StructType): StructType = {
+  def convertToSparkSchema(schema: io.delta.kernel.types.StructType): StructType = {
     StructType(schema.fields().asScala.map { field =>
       StructField(field.getName, convertToSparkDatatype(field.getDataType), field.isNullable)
     })
   }
 
-  def convertToSparkDatatype(dataType: io.delta.core.types.DataType): DataType = {
+  def convertToSparkDatatype(dataType: io.delta.kernel.types.DataType): DataType = {
     dataType match {
-      case _: io.delta.core.types.StringType => StringType
-      case _: io.delta.core.types.BooleanType => BooleanType
-      case _: io.delta.core.types.IntegerType => IntegerType
-      case _: io.delta.core.types.LongType => LongType
+      case _: io.delta.kernel.types.StringType => StringType
+      case _: io.delta.kernel.types.BooleanType => BooleanType
+      case _: io.delta.kernel.types.IntegerType => IntegerType
+      case _: io.delta.kernel.types.LongType => LongType
       case _ => // some primitive types for now
         throw new IllegalArgumentException("unsupported data type")
     }

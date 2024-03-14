@@ -31,7 +31,7 @@ object ExpressionUtils {
   }
 
   // TODO extend; consult V2ExpressionBuilder?
-  def convertToKernelExpression(expression: V2Expression): Option[Expression] = {
+  def convertToKernelExpression(expression: V2Expression): Option[Expression] = expression match {
     case e: V2And =>
       (convertToKernelPredicate(e.left()), convertToKernelPredicate(e.right())) match {
         case (Some(left), Some(right)) =>
@@ -43,7 +43,7 @@ object ExpressionUtils {
     // case e: Predicate if e.name == "=" =>
 
     case c: NamedReference =>
-      new Column(c.fieldNames)
+      Some(new Column(c.fieldNames))
     // TODO do we need to check that the column is valid?
 
     case l: Literal[Boolean] =>
