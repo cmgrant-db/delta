@@ -299,6 +299,25 @@ lazy val kernelDefaults = (project in file("kernel/kernel-defaults"))
     unidocSourceFilePatterns += SourceFilePattern("io/delta/kernel/"),
   ).configureUnidoc(docTitle = "Delta Kernel Defaults")
 
+lazy val kernelSpark = (project in file("kernel-spark"))
+  .dependsOn(kernelApi)
+  .dependsOn(kernelDefaults)
+  .settings(
+    name := "delta-kernel-spark",
+    commonSettings,
+    skipReleaseSettings,
+    libraryDependencies ++= Seq(
+      "org.apache.spark" %% "spark-core" % "3.5.0" % "provided",
+      "org.apache.spark" %% "spark-sql" % "3.5.0" % "provided",
+
+      "org.scalatest" %% "scalatest" % scalaTestVersion % "test",
+      "org.apache.spark" %% "spark-catalyst" % "3.5.0" % "test" classifier "tests",
+      "org.apache.spark" %% "spark-core" % "3.5.0" % "test" classifier "tests",
+      "org.apache.spark" %% "spark-sql" % "3.5.0" % "test" classifier "tests",
+      "org.apache.spark" %% "spark-hive" % "3.5.0" % "test" classifier "tests"
+    )
+  )
+
 // TODO javastyle tests
 // TODO unidoc
 // TODO(scott): figure out a better way to include tests in this project
