@@ -27,4 +27,12 @@ class DeltaSparkSuite extends QueryTest with SharedSparkSession {
 
   // TODO add some tests, DVs work, column mapping works, partition columns, checkpoints,
   //  partition pruning & data skipping, etc
+
+  test("filter pushdown") {
+    // example on filter pushdown read...
+    // TODO: fetch the # of files read so we can test it's being pushed down correctly
+    spark.read.format("delta").load(goldenTablePath("dv-partitioned-with-checkpoint"))
+      .where("col1 < 25")
+      .show()
+  }
 }
