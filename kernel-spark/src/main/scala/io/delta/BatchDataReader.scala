@@ -16,18 +16,16 @@
 package io.delta
 
 import java.util.Optional
-
 import io.delta.kernel.data.FilteredColumnarBatch
 import io.delta.kernel.defaults.client.DefaultTableClient
 import io.delta.kernel.utils.CloseableIterator
 import io.delta.kernel.internal.InternalScanFileUtils
 import io.delta.kernel.internal.data.ScanStateRow
 import io.delta.kernel.internal.util.Utils.singletonCloseableIterator
-
+import io.delta.utils.RowSerDeUtils.deserializeRowFromJson
 import org.apache.spark.sql.connector.read.PartitionReader
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.vectorized.ColumnarBatch
-
 import org.apache.hadoop.conf.Configuration
 
 class BatchDataReader(inputPartition: DeltaInputPartition, readSchema: StructType)
@@ -35,21 +33,24 @@ class BatchDataReader(inputPartition: DeltaInputPartition, readSchema: StructTyp
 
   // TODO use spark hadoop conf
   lazy val tableClient = DefaultTableClient.create(new Configuration())
+  val scanFileRow = deserializeRowFromJson(tableClient, inputPartition.scanFileRow)
+  val scanStateRow = deserializeRowFromJson(tableClient, inputPartition.scanState)
 
-  private def getDataIter = {
+  private def getDataIter: CloseableIterator[FilteredColumnarBatch] = {
     val physicalDataIter: CloseableIterator[io.delta.kernel.data.ColumnarBatch] =
-      tableClient.getParquetHandler()
+
+      tableClient.getParquetHandler
         .readParquetFiles(
           singletonCloseableIterator(
-            InternalScanFileUtils.getAddFileStatus(inputPartition.scanFileRow)),
-          ScanStateRow.getPhysicalDataReadSchema(tableClient, inputPartition.scanFileRow),
+            InternalScanFileUtils.getAddFileStatus(scanFileRow)),
+          ScanStateRow.getPhysicalDataReadSchema(tableClient, scanFileRow),
           Optional.empty()
           /* optional predicate the connector can apply to filter data from the reader */
         )
     io.delta.kernel.Scan.transformPhysicalData(
       tableClient,
-      inputPartition.scanState,
-      inputPartition.scanFileRow,
+      scanStateRow,
+      scanFileRow,
       physicalDataIter
     )
   }

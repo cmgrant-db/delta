@@ -55,7 +55,7 @@ class SparkRow(row: io.delta.kernel.data.Row)
     throw unsupportedException
 
   // TODO
-  override def getUTF8String(ordinal: Int): UTF8String = throw unsupportedException
+  override def getUTF8String(ordinal: Int): UTF8String = UTF8String.fromString(row.getString(ordinal))
 
   override def getBinary(ordinal: Int): Array[Byte] = row.getBinary(ordinal)
 

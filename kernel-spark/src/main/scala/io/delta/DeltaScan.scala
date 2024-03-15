@@ -16,9 +16,8 @@
 package io.delta
 
 import scala.collection.convert.ImplicitConversions.`iterator asScala`
-
 import io.delta.kernel.client.TableClient
-
+import io.delta.utils.RowSerDeUtils.serializeRowToJson
 import org.apache.spark.sql.connector.read.{Batch, InputPartition, PartitionReaderFactory, Scan}
 import org.apache.spark.sql.types.StructType
 
@@ -29,7 +28,8 @@ class DeltaScan(
 
   lazy val plannedInputPartitions: Array[InputPartition] =
     kernelScan.getScanFiles(tableClient).flatMap(_.getRows).map(row =>
-      DeltaInputPartition(row, kernelScan.getScanState(tableClient))).toArray
+      DeltaInputPartition(serializeRowToJson(row),
+        serializeRowToJson(kernelScan.getScanState(tableClient)))).toArray
 
   override def readSchema(): StructType = readSchema
 

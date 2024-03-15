@@ -19,6 +19,6 @@ import org.apache.spark.sql.connector.read.InputPartition
 
 // TODO need Row to be serializable
 case class DeltaInputPartition(
-  scanFileRow: io.delta.kernel.data.Row,
-  scanState: io.delta.kernel.data.Row
+  scanFileRow: String, // io.delta.kernel.data.Row
+  scanState: String, // io.delta.kernel.data.Row
 ) extends InputPartition
