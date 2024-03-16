@@ -15,10 +15,12 @@
  */
 package io.delta.utils
 
+import scala.collection.JavaConverters._
+
 import io.delta.kernel.expressions.{And, Column, Expression}
 
-import org.apache.spark.sql.connector.expressions.{Expression => V2Expression, Literal, NamedReference}
-import org.apache.spark.sql.connector.expressions.filter.{And => V2And}
+import org.apache.spark.sql.connector.expressions.{Literal, NamedReference, Expression => V2Expression}
+import org.apache.spark.sql.connector.expressions.filter.{Predicate, And => V2And}
 import org.apache.spark.sql.types.{BooleanType, IntegerType, LongType, StringType}
 
 object ExpressionUtils {
@@ -31,32 +33,41 @@ object ExpressionUtils {
   }
 
   // TODO extend; consult V2ExpressionBuilder?
-  def convertToKernelExpression(expression: V2Expression): Option[Expression] = expression match {
-    case e: V2And =>
-      (convertToKernelPredicate(e.left()), convertToKernelPredicate(e.right())) match {
-        case (Some(left), Some(right)) =>
-          Some(new And(left, right))
-        case _ => None
-      }
+  def convertToKernelExpression(expression: V2Expression): Option[Expression] = {
+    expression match {
+      case e: V2And =>
+        (convertToKernelPredicate(e.left()), convertToKernelPredicate(e.right())) match {
+          case (Some(left), Some(right)) =>
+            Some(new And(left, right))
+          case _ => None
+        }
 
-    // TODO: equals
-    // case e: Predicate if e.name == "=" =>
+      case e: Predicate if e.name == "=" =>
+        (convertToKernelExpression(e.children()(0)),
+          convertToKernelExpression(e.children()(1))) match {
+          case (Some(left), Some(right)) =>
+            Some(
+              new io.delta.kernel.expressions.Predicate(
+                "=",
+                List(left, right).asJava))
+          case _ => None
+        }
 
-    case c: NamedReference =>
-      Some(new Column(c.fieldNames))
-    // TODO do we need to check that the column is valid?
+      case c: NamedReference =>
+        Some(new Column(c.fieldNames))
+      // TODO do we need to check that the column is valid?
 
-    case l: Literal[Boolean] =>
-      assert(l.dataType.isInstanceOf[BooleanType])
-      Some(io.delta.kernel.expressions.Literal.ofBoolean(l.value))
-    case l: Literal[Int] =>
-      assert(l.dataType.isInstanceOf[IntegerType])
-      Some(io.delta.kernel.expressions.Literal.ofInt(l.value))
-    case l: Literal[Long] =>
-      assert(l.dataType.isInstanceOf[LongType])
-      Some(io.delta.kernel.expressions.Literal.ofLong(l.value))
-    case l: Literal[String] =>
-      assert(l.dataType.isInstanceOf[StringType])
-      Some(io.delta.kernel.expressions.Literal.ofString(l.value))
+      // Due to type erasure need to also check data type
+      case l: Literal[Boolean] if l.dataType.isInstanceOf[BooleanType] =>
+        Some(io.delta.kernel.expressions.Literal.ofBoolean(l.value))
+      case l: Literal[Int] if l.dataType.isInstanceOf[IntegerType] =>
+        Some(io.delta.kernel.expressions.Literal.ofInt(l.value))
+      case l: Literal[Long] if l.dataType.isInstanceOf[LongType] =>
+        Some(io.delta.kernel.expressions.Literal.ofLong(l.value))
+      case l: Literal[String] if l.dataType.isInstanceOf[StringType] =>
+        Some(io.delta.kernel.expressions.Literal.ofString(l.value))
+
+      case _ => None
+    }
   }
 }

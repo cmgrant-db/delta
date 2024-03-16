@@ -42,7 +42,7 @@ class DeltaScan(
   override def planInputPartitions(): Array[InputPartition] = {
     // scalastyle:off println
     println("planning input partitions")
-    println("num tasks: " + plannedInputPartitions.length)
+    println("num tasks/scan files: " + plannedInputPartitions.length)
     plannedInputPartitions
   }
 

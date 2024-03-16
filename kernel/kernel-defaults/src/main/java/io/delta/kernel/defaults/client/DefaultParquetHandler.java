@@ -19,6 +19,9 @@ import java.io.IOException;
 import java.util.List;
 import java.util.Optional;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
 
@@ -33,11 +36,16 @@ import io.delta.kernel.internal.util.Utils;
 
 import io.delta.kernel.defaults.internal.parquet.ParquetFileReader;
 import io.delta.kernel.defaults.internal.parquet.ParquetFileWriter;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Default implementation of {@link ParquetHandler} based on Hadoop APIs.
  */
 public class DefaultParquetHandler implements ParquetHandler {
+
+    private static final Logger logger = LoggerFactory.getLogger(DefaultParquetHandler.class);
+    
     private final Configuration hadoopConf;
 
     /**
@@ -54,6 +62,9 @@ public class DefaultParquetHandler implements ParquetHandler {
             CloseableIterator<FileStatus> fileIter,
             StructType physicalSchema,
             Optional<Predicate> predicate) throws IOException {
+
+        logger.info("parquet read schema = {}", physicalSchema);
+
         return new CloseableIterator<ColumnarBatch>() {
             private final ParquetFileReader batchReader = new ParquetFileReader(hadoopConf);
             private FileStatus currentFile;

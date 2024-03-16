@@ -28,11 +28,28 @@ class DeltaSparkSuite extends QueryTest with SharedSparkSession {
   // TODO add some tests, DVs work, column mapping works, partition columns, checkpoints,
   //  partition pruning & data skipping, etc
 
-  test("filter pushdown") {
-    // example on filter pushdown read...
-    // TODO: fetch the # of files read so we can test it's being pushed down correctly
+  // todo: better way to check the number of read files?
+
+  test("filter pushdown: partition predicate") {
+    // should only spawn 2 tasks check the logs
     spark.read.format("delta").load(goldenTablePath("dv-partitioned-with-checkpoint"))
-      .where("col1 < 25")
+      .where("part = 5")
+      .show()
+  }
+
+  test("filter pushdown: data skipping predicate") {
+    // should spawn 0 tasks
+    spark.read.format("delta")
+      .load(goldenTablePath("dv-with-columnmapping"))
+      .where("col1 = 50")
+      .show()
+  }
+
+  test("check schema pruning works") {
+    // check logs for "INFO DefaultParquetHandler" to see the parquet schema read which does not
+    // include col2
+    spark.read.format("delta").load(goldenTablePath("dv-partitioned-with-checkpoint"))
+      .select("col1", "part")
       .show()
   }
 }

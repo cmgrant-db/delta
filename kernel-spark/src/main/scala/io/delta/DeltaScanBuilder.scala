@@ -64,8 +64,13 @@ class DeltaScanBuilder(
 
     val predToKernelExpr = predicates.map(p => p -> ExpressionUtils.convertToKernelPredicate(p))
     pushedFilters = predToKernelExpr.filter(_._2.nonEmpty).map(_._1)
-    val filterToPush = predToKernelExpr.map(_._2).flatten.reduce((l, r) => new And(l, r))
-    kernelScanBuilder = kernelScanBuilder.withFilter(tableClient, filterToPush)
+    val filterToPush = predToKernelExpr.flatMap(_._2).reduceOption((l, r) => new And(l, r))
+    if (filterToPush.nonEmpty) {
+      kernelScanBuilder = kernelScanBuilder.withFilter(tableClient, filterToPush.get)
+      // scalastyle:off
+      println(s"filter pushed = ${filterToPush.get}")
+      // scalastyle:on
+    }
     predicates // for now since we don't know which are partition preds we return all
   }
 
